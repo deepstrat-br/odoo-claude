@@ -13,7 +13,26 @@ Helper CLI + modulo Python para o Odoo da Deepstrat via XML-RPC.
 
 Credenciais completas no `.env` (carregadas automaticamente pelo `odoo.py`).
 
-## CLI
+## Estrutura do projeto
+
+```
+odoo-deepstrat/
+├── odoo.py                          # cliente XML-RPC (lib core)
+├── scripts/
+│   ├── project/
+│   │   └── import_tasks.py          # criacao em lote de tarefas via YAML
+│   └── purchase/                    # (futuro: pedidos de compra, etc.)
+├── integrations/
+│   └── clockify.py                  # Clockify ↔ account.analytic.line
+├── data/
+│   └── tasks/                       # YAMLs de tarefas por cliente
+│       └── sudoeste_ambiental.yaml
+└── docs/
+    ├── projetos-timesheets.md
+    └── clockify.md
+```
+
+## CLI — odoo.py (raiz)
 
 ```bash
 python odoo.py projetos
@@ -22,6 +41,24 @@ python odoo.py financeiro
 python odoo.py busca res.partner "name,email,city" "customer_rank>0" 10
 python odoo.py criar-tarefa 26 "Nome da Tarefa" 4.0
 python odoo.py campos account.move
+```
+
+## CLI — scripts/project/import_tasks.py
+
+```bash
+# Criacao em lote de tarefas a partir de YAML
+python scripts/project/import_tasks.py data/tasks/<cliente>.yaml
+python scripts/project/import_tasks.py data/tasks/<cliente>.yaml --dry-run
+python scripts/project/import_tasks.py data/tasks/<cliente>.yaml --projeto "Nome do Projeto"
+```
+
+## CLI — integrations/clockify.py
+
+```bash
+python integrations/clockify.py workspaces
+python integrations/clockify.py entradas 2026-04-01 2026-04-30
+python integrations/clockify.py comparar 2026-04-01 2026-04-30
+python integrations/clockify.py comparar-rti 2026-04-01 2026-04-30
 ```
 
 ## Modulo Python
@@ -187,7 +224,7 @@ Ler `projetos-timesheets.md` antes de:
 
 Ler `clockify.md` antes de:
 - Comparar horas Clockify x Odoo
-- Usar o script `clockify.py`
+- Usar o script `integrations/clockify.py`
 - Fechar o mes no projeto RTI ou qualquer projeto Ryse
 
 ## Dicas

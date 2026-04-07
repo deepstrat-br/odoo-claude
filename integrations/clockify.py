@@ -1,6 +1,6 @@
 """
 Clockify Helper — Deepstrat
-Uso: python clockify.py <comando> [args]
+Uso: python integrations/clockify.py <comando> [args]
 
 Comandos:
   workspaces                        Lista workspaces
@@ -18,8 +18,8 @@ from datetime import datetime, timezone
 from urllib.request import urlopen, Request
 from urllib.error import HTTPError
 
-# Carrega .env (mesmo diretorio do script)
-_env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
+# .env fica na raiz do projeto (dois niveis acima de integrations/)
+_env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', ".env")
 if os.path.exists(_env_path):
     with open(_env_path) as _f:
         for _line in _f:
