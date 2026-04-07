@@ -13,6 +13,19 @@ Helper CLI + modulo Python para o Odoo da Deepstrat via XML-RPC.
 
 Credenciais completas no `.env` (carregadas automaticamente pelo `odoo.py`).
 
+## Principio de desenvolvimento de scripts
+
+Nunca criar scripts para um caso de uso especifico (ex: "criar PO do Thiago", "criar tarefas da Sudoeste").
+Sempre desenvolver o script generico primeiro (parametrizavel, reutilizavel), depois executar o caso especifico como uso desse script.
+
+Exemplo correto:
+- `scripts/purchase/import_po.py` — script generico que aceita qualquer YAML
+- Uso: `python scripts/purchase/import_po.py data/purchase/cliente_x.yaml`
+
+Os arquivos de dados (`data/`) sao temporarios e nao precisam ser mantidos no repositorio.
+
+---
+
 ## Estrutura do projeto
 
 ```
