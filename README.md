@@ -1,8 +1,6 @@
-# odoo-claude
+# odoo-deepstrat
 
-Python client layer for Claude AI to interact with any Odoo instance via XML-RPC.
-
-Built as a foundation for Claude-powered automation — works with any Odoo database you have credentials for.
+Python client + automation scripts for Odoo via XML-RPC, built for Claude-powered workflows.
 
 ---
 
@@ -12,15 +10,11 @@ Built as a foundation for Claude-powered automation — works with any Odoo data
 
 ```bash
 git clone https://github.com/deepstrat-br/odoo-claude.git
-cd odoo-claude
-pip install python-dotenv  # optional, .env is loaded natively
+cd odoo-deepstrat
+pip install pyyaml  # required for import scripts
 ```
 
-No external dependencies required — uses Python's built-in `xmlrpc.client`.
-
-**2. Configure your Odoo instance**
-
-Copy `.env.example` to `.env` and fill in your credentials:
+**2. Configure credentials**
 
 ```bash
 cp .env.example .env
@@ -31,111 +25,155 @@ ODOO_URL=https://your-instance.odoo.com
 ODOO_DB=your-database-name
 ODOO_LOGIN=your-email@company.com
 ODOO_KEY=your-api-key-here
+CLOCKIFY_KEY=your-clockify-api-key
 ```
 
-> **Where to find your API key:** Odoo → Settings → My Profile → Account Security → API Keys
-
-The `.env` file is loaded automatically — no need to set environment variables manually. You can also point Claude to a different `.env` file per project to switch between Odoo instances.
+> **Odoo API key:** Settings → My Profile → Account Security → API Keys
 
 ---
 
-## CLI
+## Project structure
+
+```
+odoo-deepstrat/
+│
+├── odoo.py                          # XML-RPC client (core lib)
+│
+├── scripts/                         # generic automation scripts by Odoo module
+│   ├── project/
+│   │   └── import_tasks.py          # bulk task creation from YAML
+│   └── purchase/
+│       └── import_po.py             # purchase order creation from YAML
+│
+├── integrations/                    # external systems ↔ Odoo
+│   └── clockify.py                  # Clockify ↔ account.analytic.line
+│
+├── data/                            # temporary input files (not versioned)
+│   ├── tasks/
+│   └── purchase/
+│
+└── docs/
+    ├── projetos-timesheets.md
+    └── clockify.md
+```
+
+---
+
+## CLI — odoo.py
 
 ```bash
 python odoo.py projetos
-python odoo.py tarefas 26
-python odoo.py tarefas "Marketing"
+python odoo.py tarefas <id_ou_nome>
 python odoo.py financeiro
 python odoo.py busca res.partner "name,email,city" "customer_rank>0" 10
-python odoo.py criar-tarefa 26 "Task name" 4.0
+python odoo.py criar-tarefa <proj_id> "Task name" 4.0
 python odoo.py campos account.move
 ```
 
 | Command | Description |
 |---|---|
 | `projetos` | List active projects |
-| `tarefas <id\|name>` | List tasks for a project (by ID or name) |
-| `financeiro` | Quick financial summary (open invoices, overdue, sales orders) |
+| `tarefas <id\|name>` | List tasks for a project |
+| `financeiro` | Quick financial summary |
 | `busca <model> <fields> [filter] [limit]` | Generic record search |
-| `criar-tarefa <proj_id> <name> [hours]` | Create a task |
-| `campos <model>` | Inspect all fields of a model |
+| `criar-tarefa <proj_id> <name> [hours]` | Create a single task |
+| `campos <model>` | Inspect fields of any model |
 
 ---
 
-## Python Module
+## Scripts
 
-Import `OdooClient` to build your own automations:
+### scripts/project/import_tasks.py
 
-```python
-from odoo import OdooClient
-
-odoo = OdooClient()  # reads credentials from .env automatically
-
-# Search
-odoo.search('model', filters=[[...]], fields=['field1', 'field2'], limit=20)
-
-# Read single record
-odoo.get('model', record_id, fields=['field1', 'field2'])
-
-# Count
-odoo.count('model', filters=[[...]])
-
-# Create
-odoo.create('model', {'field': 'value'})
-
-# Update
-odoo.update('model', record_id, {'field': 'new_value'})
-
-# Delete
-odoo.delete('model', record_id)
-
-# Inspect fields
-odoo.fields('model')
-```
-
-### Examples
-
-```python
-from odoo import OdooClient
-odoo = OdooClient()
-
-# Open invoices
-invoices = odoo.search('account.move', filters=[
-    ['move_type', '=', 'out_invoice'],
-    ['payment_state', '!=', 'paid'],
-    ['state', '=', 'posted'],
-], fields=['name', 'partner_id', 'amount_residual', 'invoice_date_due'])
-
-# Tasks in progress
-tasks = odoo.search('project.task', filters=[
-    ['stage_id.name', 'ilike', 'progress']
-], fields=['name', 'project_id', 'user_ids', 'allocated_hours'])
-
-# Create a timesheet entry
-odoo.create('account.analytic.line', {
-    'date': '2025-01-15',
-    'project_id': 26,
-    'task_id': 123,
-    'name': 'Development work',
-    'unit_amount': 2.5,
-})
-```
-
----
-
-## Switching between Odoo instances
-
-Each `.env` file points to one Odoo instance. To work with multiple databases:
-
-```
-project-a/.env   → ODOO_URL=https://client-a.odoo.com, ODOO_DB=client_a
-project-b/.env   → ODOO_URL=https://client-b.odoo.com, ODOO_DB=client_b
-```
-
-The client loads the `.env` from the same directory as `odoo.py`. Place or symlink `odoo.py` into each project folder, or set the env vars explicitly before running:
+Bulk task creation from a YAML file. Resolves project, stage, milestone, tags and assignees by name or ID.
 
 ```bash
-ODOO_URL=https://other.odoo.com ODOO_DB=other ODOO_LOGIN=me@other.com ODOO_KEY=xxx python odoo.py projetos
+python scripts/project/import_tasks.py data/tasks/client.yaml
+python scripts/project/import_tasks.py data/tasks/client.yaml --dry-run
+python scripts/project/import_tasks.py data/tasks/client.yaml --projeto "Project Name"
+```
+
+**YAML format:**
+```yaml
+project: "Project Name"  # or numeric ID
+
+tasks:
+  - name: "Task title"
+    stage: "Backlog"           # name or ID
+    milestone: "Marco 1"       # name or ID
+    hours: 4.0
+    deadline: "2026-05-01"
+    tags: [Planejamento, CRM]  # names or IDs
+    assignees: [user@email.com]
+    description:
+      - Item 1
+      - Item 2
+```
+
+---
+
+### scripts/purchase/import_po.py
+
+Purchase order creation from a YAML file. Resolves partner, product, UOM and analytic accounts by name or ID. Supports section headers and analytic distribution.
+
+```bash
+python scripts/purchase/import_po.py data/purchase/contract.yaml
+python scripts/purchase/import_po.py data/purchase/contract.yaml --dry-run
+```
+
+**YAML format:**
+```yaml
+partner: "Supplier Name"  # or numeric ID
+
+header:
+  date_planned: "2026-09-12"
+  notes: "<p>Scope description...</p>"
+
+lines:
+  - section: "Section Title"
+
+  - product: "Service on Timesheets"  # or ID
+    uom: "Hours"
+    qty: 10.0
+    price: 150.0
+    date: "2026-06-30"
+    analytic:
+      "Project Account": 100.0   # name or ID: percentage
+    name: |
+      Description line 1
+      Description line 2
+```
+
+---
+
+## integrations/clockify.py
+
+Compares Clockify time entries with Odoo timesheets.
+
+```bash
+python integrations/clockify.py workspaces
+python integrations/clockify.py projetos
+python integrations/clockify.py entradas 2026-04-01 2026-04-30
+python integrations/clockify.py comparar 2026-04-01 2026-04-30
+python integrations/clockify.py comparar-rti 2026-04-01 2026-04-30
+```
+
+---
+
+## Python module
+
+```python
+from odoo import OdooClient
+
+odoo = OdooClient()  # reads credentials from .env
+
+odoo.search('model', filters=[[...]], fields=['f1', 'f2'], limit=20)
+odoo.get('model', record_id, fields=['f1'])
+odoo.count('model', filters=[[...]])
+odoo.create('model', {'field': 'value'})
+odoo.update('model', record_id, {'field': 'new_value'})
+odoo.delete('model', record_id)
+odoo.fields('model')
 ```
 
 ---
@@ -155,11 +193,3 @@ ODOO_URL=https://other.odoo.com ODOO_DB=other ODOO_LOGIN=me@other.com ODOO_KEY=x
 | `hr.employee` | Employees |
 | `product.product` | Products |
 | `stock.quant` | Inventory |
-
-Use `python odoo.py campos <model>` to explore fields on any model.
-
----
-
-## Additional integrations
-
-- [`clockify.py`](clockify.py) — Clockify time tracking integration (compare hours vs Odoo timesheets)
