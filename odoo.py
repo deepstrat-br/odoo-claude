@@ -1,5 +1,5 @@
 """
-Odoo Helper — Deepstrat
+Odoo Helper — XML-RPC client for Claude automation
 Uso: python odoo.py <comando> [args]
 """
 
@@ -18,9 +18,9 @@ if os.path.exists(_env_path):
                 _k, _v = _line.split("=", 1)
                 os.environ.setdefault(_k.strip(), _v.strip())
 
-ODOO_URL   = os.environ.get("ODOO_URL", "https://deepstrat.odoo.com")
-ODOO_DB    = os.environ.get("ODOO_DB", "deepstrat")
-ODOO_LOGIN = os.environ.get("ODOO_LOGIN", "vagner@deepstrat.com.br")
+ODOO_URL   = os.environ.get("ODOO_URL", "")
+ODOO_DB    = os.environ.get("ODOO_DB", "")
+ODOO_LOGIN = os.environ.get("ODOO_LOGIN", "")
 ODOO_KEY   = os.environ.get("ODOO_KEY", "")
 
 
