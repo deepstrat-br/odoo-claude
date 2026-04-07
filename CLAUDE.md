@@ -13,16 +13,39 @@ Helper CLI + modulo Python para o Odoo da Deepstrat via XML-RPC.
 
 Credenciais completas no `.env` (carregadas automaticamente pelo `odoo.py`).
 
-## Principio de desenvolvimento de scripts
+---
 
-Nunca criar scripts para um caso de uso especifico (ex: "criar PO do Thiago", "criar tarefas da Sudoeste").
-Sempre desenvolver o script generico primeiro (parametrizavel, reutilizavel), depois executar o caso especifico como uso desse script.
+## Principios de desenvolvimento
 
-Exemplo correto:
-- `scripts/purchase/import_po.py` — script generico que aceita qualquer YAML
-- Uso: `python scripts/purchase/import_po.py data/purchase/cliente_x.yaml`
+**Scripts genericos, dados descartaveis.**
+Nunca criar um script para um caso especifico (ex: "criar PO do Thiago"). Sempre desenvolver o script generico e parametrizavel primeiro. Os arquivos de dados (`data/`) sao temporarios — criados na hora, usados, descartados.
 
-Os arquivos de dados (`data/`) sao temporarios e nao precisam ser mantidos no repositorio.
+**Resolver para campos relacionais.**
+Todo script que cria ou atualiza registros com campos `many2one`/`many2many` deve usar a classe `Resolver` de `odoo.py`. Ela resolve nomes para IDs com cache, evitando duplicacao de logica entre scripts.
+
+```python
+from odoo import OdooClient, Resolver
+
+odoo = OdooClient()
+r = Resolver(odoo)
+
+r.project("Meu Projeto")              # project.project -> int
+r.stage("Backlog")                    # project.task.type -> int
+r.milestone(project_id, "Marco 1")   # project.milestone -> int
+r.tags(["CRM", "Vendas"])            # project.tags -> [(6, 0, [ids])]
+r.users(["vagner@deepstrat.com.br"]) # res.users -> [int]
+r.partner("Nome do Cliente")         # res.partner -> int
+r.product("Service on Timesheets")   # product.product -> int
+r.uom("Hours")                       # uom.uom -> int
+r.analytic_distribution({"Proj X": 100.0})  # -> {str(id): float}
+r.crm_stage("Qualificados")          # crm.stage -> int
+r.employee("Thiago Monteiro")        # hr.employee -> int
+```
+
+Todos os metodos aceitam nome (string) ou ID (int) — se for ID, retorna direto sem consultar.
+
+**Scripts especializados existem para workflows repetitivos.**
+Para operacoes pontuais, Claude gera Python usando `OdooClient` diretamente, sem criar script.
 
 ---
 
@@ -30,49 +53,57 @@ Os arquivos de dados (`data/`) sao temporarios e nao precisam ser mantidos no re
 
 ```
 odoo-deepstrat/
-├── odoo.py                          # cliente XML-RPC (lib core)
+├── odoo.py                          # cliente XML-RPC + Resolver (lib core)
 ├── scripts/
 │   ├── project/
 │   │   └── import_tasks.py          # criacao em lote de tarefas via YAML
-│   └── purchase/                    # (futuro: pedidos de compra, etc.)
+│   └── purchase/
+│       └── import_po.py             # criacao de PO + linhas via YAML
 ├── integrations/
-│   └── clockify.py                  # Clockify ↔ account.analytic.line
-├── data/
-│   └── tasks/                       # YAMLs de tarefas por cliente
-│       └── sudoeste_ambiental.yaml
+│   └── clockify.py                  # Clockify <-> account.analytic.line
+├── data/                            # entradas temporarias (nao versionadas)
+│   ├── tasks/
+│   └── purchase/
 └── docs/
     ├── projetos-timesheets.md
     └── clockify.md
 ```
 
-## CLI — odoo.py (raiz)
+---
+
+## CLI — odoo.py
 
 ```bash
 python odoo.py projetos
-python odoo.py tarefas 26
+python odoo.py tarefas <id_ou_nome>
 python odoo.py financeiro
 python odoo.py busca res.partner "name,email,city" "customer_rank>0" 10
-python odoo.py criar-tarefa 26 "Nome da Tarefa" 4.0
+python odoo.py criar-tarefa <proj_id> "Nome da Tarefa" 4.0
 python odoo.py campos account.move
 ```
 
-## CLI — scripts/project/import_tasks.py
+## CLI — scripts
 
 ```bash
-# Criacao em lote de tarefas a partir de YAML
-python scripts/project/import_tasks.py data/tasks/<cliente>.yaml
-python scripts/project/import_tasks.py data/tasks/<cliente>.yaml --dry-run
-python scripts/project/import_tasks.py data/tasks/<cliente>.yaml --projeto "Nome do Projeto"
+# Tarefas em lote
+python scripts/project/import_tasks.py data/tasks/cliente.yaml
+python scripts/project/import_tasks.py data/tasks/cliente.yaml --dry-run
+python scripts/project/import_tasks.py data/tasks/cliente.yaml --projeto "Nome"
+
+# Pedido de Compra
+python scripts/purchase/import_po.py data/purchase/contrato.yaml
+python scripts/purchase/import_po.py data/purchase/contrato.yaml --dry-run
 ```
 
 ## CLI — integrations/clockify.py
 
 ```bash
-python integrations/clockify.py workspaces
 python integrations/clockify.py entradas 2026-04-01 2026-04-30
 python integrations/clockify.py comparar 2026-04-01 2026-04-30
 python integrations/clockify.py comparar-rti 2026-04-01 2026-04-30
 ```
+
+---
 
 ## Modulo Python
 
@@ -80,12 +111,12 @@ python integrations/clockify.py comparar-rti 2026-04-01 2026-04-30
 from odoo import OdooClient
 odoo = OdooClient()
 
-odoo.search('modelo', filters=[[...]], fields=['campo1','campo2'], limit=20)
+odoo.search('modelo', filters=[[...]], fields=['campo1', 'campo2'], limit=20)
+odoo.get('modelo', record_id, fields=[...])
+odoo.count('modelo', filters=[[...]])
 odoo.create('modelo', {'campo': 'valor'})
 odoo.update('modelo', record_id, {'campo': 'novo_valor'})
 odoo.delete('modelo', record_id)
-odoo.count('modelo', filters=[[...]])
-odoo.get('modelo', record_id, fields=[...])
 odoo.fields('modelo')
 ```
 
@@ -178,7 +209,7 @@ odoo.fields('modelo')
 
 ## IDs de referencia
 
-### Etapas de tarefas (project.task → stage_id)
+### Etapas de tarefas (project.task.type)
 
 | ID | Etapa |
 |---|---|
@@ -191,7 +222,7 @@ odoo.fields('modelo')
 | 80 | Bloqueado |
 | 12 | Cancelado |
 
-### Etapas CRM (crm.lead → stage_id)
+### Etapas CRM (crm.stage)
 
 | ID | Etapa |
 |---|---|
@@ -226,24 +257,18 @@ odoo.fields('modelo')
 
 ## Documentacao detalhada
 
-- [Projetos & Timesheets](docs/projetos-timesheets.md) — principios de gestao de projetos, fluxo de etapas, convencoes de lancamento de horas e metricas de saude
-- [Clockify](docs/clockify.md) — integracao com Clockify (Ryse), comandos CLI, mapeamento de projetos/usuarios e fluxo de fechamento mensal
+- [Projetos & Timesheets](docs/projetos-timesheets.md) — fluxo de etapas, convencoes de timesheet, metricas de saude
+- [Clockify](docs/clockify.md) — integracao Clockify x Odoo, mapeamento de projetos/usuarios, fechamento mensal
 
-Ler `projetos-timesheets.md` antes de:
-- Criar ou mover tarefas (fluxo de etapas e convencoes)
-- Lancar, corrigir ou validar horas (regras de timesheet)
-- Avaliar saude de um projeto (metricas e sinais de atencao)
-- Responder perguntas sobre processo — nao apenas sobre dados
+Ler `projetos-timesheets.md` antes de criar/mover tarefas, lancar horas ou avaliar saude de projeto.
+Ler `clockify.md` antes de comparar horas ou fechar o mes no projeto RTI.
 
-Ler `clockify.md` antes de:
-- Comparar horas Clockify x Odoo
-- Usar o script `integrations/clockify.py`
-- Fechar o mes no projeto RTI ou qualquer projeto Ryse
+---
 
 ## Dicas
 
-- Campos `many2one` retornam `[id, 'nome']` — use `[1]` para nome, `[0]` para ID
+- Campos `many2one` retornam `[id, 'nome']` — use `[0]` para ID, `[1]` para nome
 - Ao criar tarefas: `'user_ids': [uid]` (lista), nao `'user_id'`
-- Datas como string `YYYY-MM-DD`
+- Datas como string `YYYY-MM-DD`; datetimes como `YYYY-MM-DD HH:MM:SS`
 - Sempre `default=str` no `json.dumps()`
 - UID 2 = Vagner (usuario logado)

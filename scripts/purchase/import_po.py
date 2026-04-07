@@ -4,11 +4,10 @@
 import_po.py — Criacao de Pedido de Compra (PO) no Odoo a partir de um arquivo YAML.
 
 Uso (da raiz do projeto):
-  python scripts/purchase/import_po.py data/purchase/<cliente>.yaml
-  python scripts/purchase/import_po.py data/purchase/<cliente>.yaml --dry-run
+  python scripts/purchase/import_po.py data/purchase/contrato.yaml
+  python scripts/purchase/import_po.py data/purchase/contrato.yaml --dry-run
 
-Formato do YAML (ver data/purchase/sudoeste_ambiental_pmo.yaml como referencia):
-
+Formato do YAML:
   partner: nome ou ID do fornecedor/prestador
 
   header:
@@ -42,96 +41,7 @@ except ImportError:
     print("Dependencia ausente: pip install pyyaml")
     sys.exit(1)
 
-from odoo import OdooClient
-
-
-# ─── Resolver ─────────────────────────────────────────────────────────────────
-
-def coerce_id(value):
-    if isinstance(value, int):
-        return value
-    try:
-        return int(value)
-    except (ValueError, TypeError):
-        return None
-
-
-class Resolver:
-    def __init__(self, odoo):
-        self.odoo = odoo
-        self._partners = {}
-        self._products = {}
-        self._uoms = {}
-        self._analytics = {}
-
-    def partner(self, name_or_id):
-        pid = coerce_id(name_or_id)
-        if pid:
-            return pid
-        if name_or_id not in self._partners:
-            r = self.odoo.search('res.partner', [['name', '=', name_or_id]], ['id'], limit=1)
-            if not r:
-                r = self.odoo.search('res.partner', [['name', 'ilike', name_or_id]], ['id'], limit=1)
-            if not r:
-                raise ValueError(f"Parceiro nao encontrado: {name_or_id!r}")
-            self._partners[name_or_id] = r[0]['id']
-        return self._partners[name_or_id]
-
-    def product(self, name_or_id):
-        pid = coerce_id(name_or_id)
-        if pid:
-            return pid
-        if name_or_id not in self._products:
-            r = self.odoo.search('product.product', [['name', '=', name_or_id]], ['id'], limit=1)
-            if not r:
-                r = self.odoo.search('product.product', [['name', 'ilike', name_or_id]], ['id'], limit=1)
-            if not r:
-                raise ValueError(f"Produto nao encontrado: {name_or_id!r}")
-            self._products[name_or_id] = r[0]['id']
-        return self._products[name_or_id]
-
-    def uom(self, name_or_id):
-        if name_or_id is None:
-            return None
-        uid = coerce_id(name_or_id)
-        if uid:
-            return uid
-        if name_or_id not in self._uoms:
-            r = self.odoo.search('uom.uom', [['name', '=', name_or_id]], ['id'], limit=1)
-            if not r:
-                r = self.odoo.search('uom.uom', [['name', 'ilike', name_or_id]], ['id'], limit=1)
-            if not r:
-                raise ValueError(f"Unidade de medida nao encontrada: {name_or_id!r}")
-            self._uoms[name_or_id] = r[0]['id']
-        return self._uoms[name_or_id]
-
-    def analytic_distribution(self, analytic_dict):
-        """
-        Converte {nome_ou_id: percentual} -> {str(id): percentual}
-        conforme exigido pelo campo analytic_distribution do Odoo.
-        """
-        if not analytic_dict:
-            return {}
-        result = {}
-        for key, pct in analytic_dict.items():
-            aid = coerce_id(key)
-            if not aid:
-                if key not in self._analytics:
-                    r = self.odoo.search(
-                        'account.analytic.account',
-                        [['name', '=', key]], ['id'], limit=1
-                    )
-                    if not r:
-                        r = self.odoo.search(
-                            'account.analytic.account',
-                            [['name', 'ilike', key]], ['id'], limit=1
-                        )
-                    if not r:
-                        raise ValueError(f"Conta analitica nao encontrada: {key!r}")
-                    self._analytics[key] = r[0]['id']
-                aid = self._analytics[key]
-            result[str(aid)] = float(pct)
-        return result
+from odoo import OdooClient, Resolver
 
 
 # ─── Build ────────────────────────────────────────────────────────────────────
@@ -141,7 +51,6 @@ def build_header(raw_header, partner_id):
     if not raw_header:
         return vals
     if 'date_planned' in raw_header:
-        # Odoo espera datetime; aceita date e adiciona horario
         d = str(raw_header['date_planned'])
         vals['date_planned'] = d if 'T' in d or ' ' in d else f"{d} 18:00:00"
     if 'notes' in raw_header:
@@ -150,8 +59,6 @@ def build_header(raw_header, partner_id):
 
 
 def build_line(raw, po_id, seq, resolver):
-    """Retorna dict com valores para purchase.order.line."""
-    # Linha de secao
     if 'section' in raw:
         return {
             'order_id': po_id,
@@ -232,12 +139,10 @@ def main():
         print(f"\n  Total: {total_qty:.1f} unidades | R$ {total_value:,.2f}")
         return
 
-    # Cria o cabecalho do PO
     header_vals = build_header(data.get('header', {}), partner_id)
     po_id = odoo.create('purchase.order', header_vals)
     print(f"PO criado: ID {po_id}")
 
-    # Cria as linhas
     errors = []
     for i, raw in enumerate(raw_lines, 1):
         seq = i * 10
@@ -250,7 +155,6 @@ def main():
             errors.append((i, str(e)))
             print(f"  [{i:02d}] ERRO: {e}")
 
-    # Resumo
     po = odoo.get('purchase.order', po_id, fields=['name', 'partner_id', 'state', 'amount_total'])
     print(f"\nPO {po['name']} | {po['partner_id'][1]} | R$ {po['amount_total']:,.2f}")
     if errors:

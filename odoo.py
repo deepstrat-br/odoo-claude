@@ -68,6 +68,127 @@ class OdooClient:
         return self._call(model, "fields_get", [], {"attributes": ["string", "type"]})
 
 
+# ─── Resolver ─────────────────────────────────────────────────────────────────
+
+def coerce_id(value):
+    """Converte valor para int se possivel, senao retorna None."""
+    if isinstance(value, int):
+        return value
+    try:
+        return int(value)
+    except (ValueError, TypeError):
+        return None
+
+
+class Resolver:
+    """
+    Resolve nomes para IDs no Odoo com cache por sessao.
+    Compartilhado por todos os scripts de importacao.
+
+    Uso:
+        from odoo import OdooClient, Resolver
+        odoo = OdooClient()
+        r = Resolver(odoo)
+        r.project("Meu Projeto")      # -> int
+        r.stage("Backlog")            # -> int
+        r.tags(["CRM", "Vendas"])     # -> [(6, 0, [ids])]
+    """
+
+    def __init__(self, odoo):
+        self.odoo = odoo
+        self._cache = {}
+
+    def _resolve(self, model, name_or_id, extra_domain=None):
+        """Busca registro por nome com cache. Tenta '=' exato, depois 'ilike'."""
+        id_ = coerce_id(name_or_id)
+        if id_:
+            return id_
+        key = (model, str(name_or_id), str(extra_domain))
+        if key not in self._cache:
+            domain = [['name', '=', name_or_id]] + (extra_domain or [])
+            r = self.odoo.search(model, domain, ['id'], limit=1)
+            if not r:
+                domain[0][1] = 'ilike'
+                r = self.odoo.search(model, domain, ['id'], limit=1)
+            if not r:
+                raise ValueError(f"{model}: '{name_or_id}' nao encontrado")
+            self._cache[key] = r[0]['id']
+        return self._cache[key]
+
+    # ── Projetos ──────────────────────────────────────────────────────────────
+    def project(self, name_or_id):
+        return self._resolve('project.project', name_or_id)
+
+    def stage(self, name_or_id):
+        """Etapa de tarefa (project.task.type) — escopo global no Odoo."""
+        if name_or_id is None:
+            return None
+        return self._resolve('project.task.type', name_or_id)
+
+    def milestone(self, project_id, name_or_id):
+        if name_or_id is None:
+            return None
+        return self._resolve('project.milestone', name_or_id, [['project_id', '=', project_id]])
+
+    def tags(self, names):
+        """Retorna [(6, 0, [ids])] para campos many2many de tags."""
+        if not names:
+            return [(6, 0, [])]
+        return [(6, 0, [self._resolve('project.tags', n) for n in names])]
+
+    def users(self, names_or_ids):
+        """Resolve por login (email) ou nome. Retorna lista de IDs."""
+        if not names_or_ids:
+            return []
+        result = []
+        for n in names_or_ids:
+            id_ = coerce_id(n)
+            if id_:
+                result.append(id_)
+                continue
+            key = ('res.users:login', str(n))
+            if key not in self._cache:
+                r = self.odoo.search('res.users', [['login', '=', n]], ['id'], limit=1)
+                if not r:
+                    r = self.odoo.search('res.users', [['name', 'ilike', n]], ['id'], limit=1)
+                if not r:
+                    raise ValueError(f"res.users: '{n}' nao encontrado")
+                self._cache[key] = r[0]['id']
+            result.append(self._cache[key])
+        return result
+
+    # ── Compras / Vendas / Financeiro ─────────────────────────────────────────
+    def partner(self, name_or_id):
+        return self._resolve('res.partner', name_or_id)
+
+    def product(self, name_or_id):
+        return self._resolve('product.product', name_or_id)
+
+    def uom(self, name_or_id):
+        if name_or_id is None:
+            return None
+        return self._resolve('uom.uom', name_or_id)
+
+    def analytic_distribution(self, analytic_dict):
+        """Converte {nome_ou_id: pct} -> {str(id): pct} para o campo analytic_distribution."""
+        if not analytic_dict:
+            return {}
+        return {
+            str(self._resolve('account.analytic.account', k)): float(v)
+            for k, v in analytic_dict.items()
+        }
+
+    # ── CRM ───────────────────────────────────────────────────────────────────
+    def crm_stage(self, name_or_id):
+        if name_or_id is None:
+            return None
+        return self._resolve('crm.stage', name_or_id)
+
+    # ── RH ────────────────────────────────────────────────────────────────────
+    def employee(self, name_or_id):
+        return self._resolve('hr.employee', name_or_id)
+
+
 # ─── CLI ──────────────────────────────────────────────────────────────────────
 
 def print_table(records, cols=None):

@@ -4,11 +4,11 @@
 import_tasks.py — Criacao em lote de tarefas no Odoo a partir de um arquivo YAML.
 
 Uso (da raiz do projeto):
-  python scripts/project/import_tasks.py data/tasks/sudoeste_ambiental.yaml
-  python scripts/project/import_tasks.py data/tasks/meu_cliente.yaml --dry-run
-  python scripts/project/import_tasks.py data/tasks/meu_cliente.yaml --projeto "Projeto X"
+  python scripts/project/import_tasks.py data/tasks/cliente.yaml
+  python scripts/project/import_tasks.py data/tasks/cliente.yaml --dry-run
+  python scripts/project/import_tasks.py data/tasks/cliente.yaml --projeto "Projeto X"
 
-Formato do YAML (ver data/tasks/sudoeste_ambiental.yaml como referencia):
+Formato do YAML:
   project: nome ou ID do projeto (pode ser sobrescrito com --projeto)
   tasks:
     - name: "Nome da Tarefa"       # obrigatorio
@@ -27,7 +27,6 @@ import sys
 import os
 import argparse
 
-# Garante que odoo.py (raiz do projeto) seja encontrado independente de onde o script e chamado
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 
 try:
@@ -36,121 +35,12 @@ except ImportError:
     print("Dependencia ausente: pip install pyyaml")
     sys.exit(1)
 
-from odoo import OdooClient
+from odoo import OdooClient, Resolver
 
-
-# ─── Helpers ──────────────────────────────────────────────────────────────────
 
 def html_list(items):
     lines = ''.join(f'<li>{i}</li>' for i in items)
     return f'<ul>{lines}</ul>'
-
-
-def coerce_id(value):
-    """Converte valor para int se possivel, senao retorna None."""
-    if isinstance(value, int):
-        return value
-    try:
-        return int(value)
-    except (ValueError, TypeError):
-        return None
-
-
-# ─── Resolver ─────────────────────────────────────────────────────────────────
-
-class Resolver:
-    """Resolve nomes para IDs no Odoo com cache por sessao."""
-
-    def __init__(self, odoo):
-        self.odoo = odoo
-        self._tags = {}        # name -> id
-        self._stages = {}      # name -> id  (globais no Odoo)
-        self._milestones = {}  # (project_id, name) -> id
-        self._users = {}       # login/name -> id
-
-    def project(self, name_or_id):
-        pid = coerce_id(name_or_id)
-        if pid:
-            return pid
-        r = self.odoo.search('project.project', [['name', '=', name_or_id]], ['id'], limit=1)
-        if not r:
-            r = self.odoo.search('project.project', [['name', 'ilike', name_or_id]], ['id'], limit=1)
-        if not r:
-            raise ValueError(f"Projeto nao encontrado: {name_or_id!r}")
-        return r[0]['id']
-
-    def tags(self, names):
-        if not names:
-            return [(6, 0, [])]
-        ids = []
-        for name in names:
-            pid = coerce_id(name)
-            if pid:
-                ids.append(pid)
-                continue
-            if name not in self._tags:
-                r = self.odoo.search('project.tags', [['name', '=', name]], ['id'], limit=1)
-                if not r:
-                    raise ValueError(f"Tag nao encontrada: {name!r}")
-                self._tags[name] = r[0]['id']
-            ids.append(self._tags[name])
-        return [(6, 0, ids)]
-
-    def stage(self, name_or_id):
-        if name_or_id is None:
-            return None
-        sid = coerce_id(name_or_id)
-        if sid:
-            return sid
-        if name_or_id not in self._stages:
-            r = self.odoo.search('project.task.type', [['name', '=', name_or_id]], ['id'], limit=1)
-            if not r:
-                r = self.odoo.search('project.task.type', [['name', 'ilike', name_or_id]], ['id'], limit=1)
-            if not r:
-                raise ValueError(f"Etapa nao encontrada: {name_or_id!r}")
-            self._stages[name_or_id] = r[0]['id']
-        return self._stages[name_or_id]
-
-    def milestone(self, project_id, name_or_id):
-        if name_or_id is None:
-            return None
-        mid = coerce_id(name_or_id)
-        if mid:
-            return mid
-        key = (project_id, name_or_id)
-        if key not in self._milestones:
-            r = self.odoo.search('project.milestone', [
-                ['project_id', '=', project_id],
-                ['name', '=', name_or_id],
-            ], ['id'], limit=1)
-            if not r:
-                r = self.odoo.search('project.milestone', [
-                    ['project_id', '=', project_id],
-                    ['name', 'ilike', name_or_id],
-                ], ['id'], limit=1)
-            if not r:
-                raise ValueError(f"Milestone nao encontrado: {name_or_id!r}")
-            self._milestones[key] = r[0]['id']
-        return self._milestones[key]
-
-    def users(self, names_or_ids):
-        if not names_or_ids:
-            return []
-        ids = []
-        for n in names_or_ids:
-            uid = coerce_id(n)
-            if uid:
-                ids.append(uid)
-                continue
-            if n not in self._users:
-                r = self.odoo.search('res.users', [['login', '=', n]], ['id'], limit=1)
-                if not r:
-                    r = self.odoo.search('res.users', [['name', 'ilike', n]], ['id'], limit=1)
-                if not r:
-                    raise ValueError(f"Usuario nao encontrado: {n!r}")
-                self._users[n] = r[0]['id']
-            ids.append(self._users[n])
-        return ids
 
 
 # ─── Build ────────────────────────────────────────────────────────────────────
@@ -224,7 +114,7 @@ def main():
             hours = vals.get('allocated_hours', 0.0)
             total_hours += hours
 
-            ms_label = str(raw.get('milestone', '—'))[:22]
+            ms_label = str(raw.get('milestone', '-'))[:22]
             name_label = vals['name'][:50]
 
             if args.dry_run:
