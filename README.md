@@ -1,2 +1,2 @@
 # odoo-claude
-Interaction layer of Claude and Ocoo
+Interaction layer of Claude and Odoo
