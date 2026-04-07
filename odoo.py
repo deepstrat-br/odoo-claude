@@ -170,13 +170,18 @@ class Resolver:
         return self._resolve('uom.uom', name_or_id)
 
     def analytic_distribution(self, analytic_dict):
-        """Converte {nome_ou_id: pct} -> {str(id): pct} para o campo analytic_distribution."""
+        """Converte {nome_ou_id: pct} -> {str(id): pct} para o campo analytic_distribution.
+        Valida que os percentuais somam 100%."""
         if not analytic_dict:
             return {}
-        return {
+        result = {
             str(self._resolve('account.analytic.account', k)): float(v)
             for k, v in analytic_dict.items()
         }
+        total = sum(result.values())
+        if abs(total - 100.0) > 0.01:
+            raise ValueError(f"analytic_distribution soma {total:.1f}% (esperado 100%)")
+        return result
 
     # ── CRM ───────────────────────────────────────────────────────────────────
     def crm_stage(self, name_or_id):
