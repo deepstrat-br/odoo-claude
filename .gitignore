@@ -12,6 +12,7 @@ __pycache__/
 
 # Claude
 .claude/
+CLAUDE.local.md
 
 # OS
 .DS_Store
