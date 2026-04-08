@@ -20,7 +20,7 @@ Credenciais carregadas automaticamente pelo `odoo.py`. Cada usuario configura se
 ## Principios de desenvolvimento
 
 **Scripts genericos, dados descartaveis.**
-Nunca criar um script para um caso especifico (ex: "criar PO do Thiago"). Sempre desenvolver o script generico e parametrizavel primeiro. Os arquivos de dados (`data/`) sao temporarios — criados na hora, usados, descartados.
+Nunca criar um script para um caso especifico (ex: "criar PO do fulano"). Sempre desenvolver o script generico e parametrizavel primeiro. Os arquivos de dados (`data/`) sao temporarios — criados na hora, usados, descartados.
 
 **Resolver para campos relacionais.**
 Todo script que cria ou atualiza registros com campos `many2one`/`many2many` deve usar a classe `Resolver` de `odoo.py`. Ela resolve nomes para IDs com cache, evitando duplicacao de logica entre scripts.
@@ -41,7 +41,7 @@ r.product("Service on Timesheets")   # product.product -> int
 r.uom("Hours")                       # uom.uom -> int
 r.analytic_distribution({"Proj X": 100.0})  # -> {str(id): float}
 r.crm_stage("Qualificados")          # crm.stage -> int
-r.employee("Thiago Monteiro")        # hr.employee -> int
+r.employee("Nome do Funcionario")    # hr.employee -> int
 ```
 
 Todos os metodos aceitam nome (string) ou ID (int) — se for ID, retorna direto sem consultar.
@@ -217,6 +217,30 @@ odoo.fields('modelo')
 
 Ler `projetos-timesheets.md` antes de criar/mover tarefas, lancar horas ou avaliar saude de projeto.
 Ler `clockify.md` antes de comparar horas ou fechar o mes no projeto RTI.
+
+---
+
+## Configuracao local — CLAUDE.local.md
+
+Informacoes pessoais (login, UID, IDs de referencia) **nao devem** estar neste arquivo.
+Cada usuario cria seu proprio `CLAUDE.local.md` na raiz do projeto (ja esta no `.gitignore`).
+
+O Claude Code carrega automaticamente ambos os arquivos (`CLAUDE.md` + `CLAUDE.local.md`).
+
+Exemplo de conteudo para `CLAUDE.local.md`:
+
+```markdown
+# Configuracao pessoal
+
+## Conexao
+| Param | Valor |
+|---|---|
+| Login | `seu-email@deepstrat.com.br` |
+| UID | `2` |
+
+## IDs de referencia
+(tabelas de projetos, funcionarios, etapas, etc.)
+```
 
 ---
 
