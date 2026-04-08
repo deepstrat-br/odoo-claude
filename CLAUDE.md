@@ -4,14 +4,14 @@ Helper CLI + modulo Python para o Odoo da Deepstrat via XML-RPC.
 
 ## Conexao
 
-| Param | Valor |
+| Param | Origem |
 |---|---|
-| URL | `https://deepstrat.odoo.com` |
-| DB | `deepstrat` |
-| Login | `vagner@deepstrat.com.br` |
-| UID | `2` |
+| URL | `ODOO_URL` no `.env` |
+| DB | `ODOO_DB` no `.env` |
+| Login | `ODOO_LOGIN` no `.env` |
+| API Key | `ODOO_KEY` no `.env` |
 
-Credenciais completas no `.env` (carregadas automaticamente pelo `odoo.py`).
+Credenciais carregadas automaticamente pelo `odoo.py`. Cada usuario configura seu proprio `.env`.
 
 **Moeda: BRL (R$).** A Deepstrat opera no Brasil. A moeda base do Odoo é BRL (Real brasileiro). Todos os valores monetarios retornados pelo MCP/CLI estao em BRL, salvo quando `currency_id` indicar outra moeda. Nunca assumir USD, EUR ou outra moeda.
 
@@ -35,7 +35,7 @@ r.project("Meu Projeto")              # project.project -> int
 r.stage("Backlog")                    # project.task.type -> int
 r.milestone(project_id, "Marco 1")   # project.milestone -> int
 r.tags(["CRM", "Vendas"])            # project.tags -> [(6, 0, [ids])]
-r.users(["vagner@deepstrat.com.br"]) # res.users -> [int]
+r.users(["user@deepstrat.com.br"])  # res.users -> [int]
 r.partner("Nome do Cliente")         # res.partner -> int
 r.product("Service on Timesheets")   # product.product -> int
 r.uom("Hours")                       # uom.uom -> int
@@ -274,4 +274,4 @@ Ler `clockify.md` antes de comparar horas ou fechar o mes no projeto RTI.
 - Ao criar tarefas: `'user_ids': [uid]` (lista), nao `'user_id'`
 - Datas como string `YYYY-MM-DD`; datetimes como `YYYY-MM-DD HH:MM:SS`
 - Sempre `default=str` no `json.dumps()`
-- UID 2 = Vagner (usuario logado)
+- O UID do usuario logado vem de `odoo.uid` (autenticado via `.env`)
