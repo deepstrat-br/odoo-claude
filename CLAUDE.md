@@ -13,6 +13,8 @@ Helper CLI + modulo Python para o Odoo da Deepstrat via XML-RPC.
 
 Credenciais completas no `.env` (carregadas automaticamente pelo `odoo.py`).
 
+**Moeda: BRL (R$).** A Deepstrat opera no Brasil. A moeda base do Odoo é BRL (Real brasileiro). Todos os valores monetarios retornados pelo MCP/CLI estao em BRL, salvo quando `currency_id` indicar outra moeda. Nunca assumir USD, EUR ou outra moeda.
+
 ---
 
 ## Principios de desenvolvimento
@@ -54,6 +56,7 @@ Para operacoes pontuais, Claude gera Python usando `OdooClient` diretamente, sem
 ```
 odoo-deepstrat/
 ├── odoo.py                          # cliente XML-RPC + Resolver (lib core)
+├── mcp_server.py                    # servidor MCP (Model Context Protocol)
 ├── scripts/
 │   ├── project/
 │   │   └── import_tasks.py          # criacao em lote de tarefas via YAML

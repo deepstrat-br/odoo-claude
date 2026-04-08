@@ -1,6 +1,8 @@
 # odoo-deepstrat
 
-Python client + automation scripts for Odoo via XML-RPC, built for Claude-powered workflows.
+Python client, MCP server, and automation scripts for Odoo via XML-RPC, built for Claude-powered workflows.
+
+> **Currency:** All monetary values are in **BRL (R$)** unless explicitly stated otherwise. The Odoo instance is configured for a Brazilian company.
 
 ---
 
@@ -37,7 +39,8 @@ CLOCKIFY_KEY=your-clockify-api-key
 ```
 odoo-deepstrat/
 │
-├── odoo.py                          # XML-RPC client (core lib)
+├── odoo.py                          # XML-RPC client + Resolver (core lib)
+├── mcp_server.py                    # MCP server (Model Context Protocol)
 │
 ├── scripts/                         # generic automation scripts by Odoo module
 │   ├── project/
@@ -56,6 +59,16 @@ odoo-deepstrat/
     ├── projetos-timesheets.md
     └── clockify.md
 ```
+
+---
+
+## MCP Server — mcp_server.py
+
+Exposes Odoo as tools via [Model Context Protocol](https://modelcontextprotocol.io), enabling LLM agents (Claude Code, etc.) to interact with the ERP directly.
+
+**Tools available:** `buscar`, `contar`, `ler_registro`, `criar_registro`, `atualizar_registro`, `deletar_registro`, `listar_campos`, `listar_projetos`, `listar_tarefas`, `criar_tarefa`, `mover_tarefa`, `resumo_financeiro`, `pipeline_crm`, `lancar_horas`, `resolver_nome`.
+
+All monetary values returned by MCP tools include explicit currency metadata (field `moeda` or `_BRL` suffix).
 
 ---
 
