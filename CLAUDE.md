@@ -208,15 +208,39 @@ odoo.fields('modelo')
 | `unit_amount` | float | Horas |
 | `validated` | bool | Aprovado pelo gestor |
 
+### whatsapp.template (Templates WhatsApp)
+
+| Campo | Tipo | Descricao |
+|---|---|---|
+| `name` | char | Nome do template |
+| `template_name` | char | Nome tecnico (slug) |
+| `status` | sel | `approved` / `pending` / `rejected` |
+| `body` | text | Corpo da mensagem (com placeholders {{1}}, {{2}}...) |
+| `model` | char | Modelo vinculado (ex: `crm.lead`, `account.move`) |
+| `phone_field` | char | Campo de telefone no modelo |
+| `variable_ids` | o2m | Variaveis do template |
+| `wa_account_id` | m2o | Conta WhatsApp Business |
+
+### whatsapp.message (Mensagens WhatsApp)
+
+| Campo | Tipo | Descricao |
+|---|---|---|
+| `mobile_number` | char | Numero destino |
+| `state` | sel | `outgoing` / `sent` / `delivered` / `read` / `error` / `cancel` |
+| `wa_template_id` | m2o | Template utilizado |
+| `failure_reason` | char | Motivo da falha |
+
 ---
 
 ## Documentacao detalhada
 
 - [Projetos & Timesheets](docs/projetos-timesheets.md) — fluxo de etapas, convencoes de timesheet, metricas de saude
 - [Clockify](docs/clockify.md) — integracao Clockify x Odoo, mapeamento de projetos/usuarios, fechamento mensal
+- [Qualificacao de Leads](docs/qualificacao-leads.md) — metodologia de enriquecimento e priorizacao de leads CRM
 
 Ler `projetos-timesheets.md` antes de criar/mover tarefas, lancar horas ou avaliar saude de projeto.
 Ler `clockify.md` antes de comparar horas ou fechar o mes no projeto RTI.
+Ler `qualificacao-leads.md` antes de qualificar leads ou usar as tools `leads_pendentes_qualificacao` / `qualificar_lead`.
 
 ---
 
