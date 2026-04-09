@@ -1,6 +1,23 @@
 """
 Odoo Helper — XML-RPC client for Claude automation
-Uso: python odoo.py <comando> [args]
+
+Biblioteca central para acesso ao Odoo via XML-RPC.
+Exporta OdooClient (operacoes CRUD) e Resolver (resolucao de nomes para IDs com cache).
+
+Uso como biblioteca:
+    from odoo import OdooClient, Resolver
+    odoo = OdooClient()
+    r = Resolver(odoo)
+
+Uso como CLI:
+    python odoo.py projetos
+    python odoo.py tarefas <id_ou_nome>
+    python odoo.py busca <modelo> <campos> [filtro] [limite]
+    python odoo.py criar-tarefa <proj_id> "Nome" [horas]
+    python odoo.py campos <modelo>
+    python odoo.py financeiro
+
+Credenciais carregadas automaticamente do arquivo .env no mesmo diretorio.
 """
 
 import xmlrpc.client
@@ -25,6 +42,18 @@ ODOO_KEY   = os.environ.get("ODOO_KEY", "")
 
 
 class OdooClient:
+    """Cliente XML-RPC para o Odoo ERP da Deepstrat.
+
+    Encapsula as chamadas execute_kw da API XML-RPC do Odoo com metodos
+    de alto nivel para search_read, read, create, write e unlink.
+
+    Autentica automaticamente ao instanciar usando as variaveis de ambiente
+    ODOO_URL, ODOO_DB, ODOO_LOGIN e ODOO_KEY (carregadas do .env).
+
+    Attributes:
+        uid: ID do usuario autenticado (int). Disponivel apos __init__.
+    """
+
     def __init__(self):
         common = xmlrpc.client.ServerProxy(f"{ODOO_URL}/xmlrpc/2/common")
         self.uid = common.authenticate(ODOO_DB, ODOO_LOGIN, ODOO_KEY, {})
@@ -33,11 +62,24 @@ class OdooClient:
         self._models = xmlrpc.client.ServerProxy(f"{ODOO_URL}/xmlrpc/2/object")
 
     def _call(self, model, method, args, kwargs=None):
+        """Chama execute_kw diretamente. Use para metodos nao cobertos pela API publica."""
         return self._models.execute_kw(
             ODOO_DB, self.uid, ODOO_KEY, model, method, args, kwargs or {}
         )
 
     def search(self, model, filters=None, fields=None, limit=80, order=None):
+        """Busca registros com search_read.
+
+        Args:
+            model: Modelo Odoo (ex: 'res.partner').
+            filters: Domain Odoo [[campo, op, valor], ...]. None = sem filtro.
+            fields: Campos a retornar. None = todos.
+            limit: Maximo de registros (default 80).
+            order: Ordenacao SQL (ex: 'name asc').
+
+        Returns:
+            Lista de dicionarios com os registros encontrados.
+        """
         kwargs = {"limit": limit}
         if fields:
             kwargs["fields"] = fields
@@ -46,9 +88,19 @@ class OdooClient:
         return self._call(model, "search_read", [filters or []], kwargs)
 
     def count(self, model, filters=None):
+        """Conta registros sem retornar dados. Mais eficiente que len(search(...)).
+
+        Returns:
+            Inteiro com o total de registros que atendem ao filtro.
+        """
         return self._call(model, "search_count", [filters or []])
 
     def get(self, model, record_id, fields=None):
+        """Le um unico registro pelo ID.
+
+        Returns:
+            Dicionario do registro, ou None se nao encontrado.
+        """
         kwargs = {}
         if fields:
             kwargs["fields"] = fields
@@ -56,15 +108,19 @@ class OdooClient:
         return result[0] if result else None
 
     def create(self, model, values):
+        """Cria um registro e retorna o ID criado (int)."""
         return self._call(model, "create", [values])
 
     def update(self, model, record_id, values):
+        """Atualiza campos de um registro existente (write parcial). Retorna True."""
         return self._call(model, "write", [[record_id], values])
 
     def delete(self, model, record_id):
+        """Deleta permanentemente um registro (unlink). Acao irreversivel. Retorna True."""
         return self._call(model, "unlink", [[record_id]])
 
     def fields(self, model):
+        """Retorna metadados dos campos do modelo: {campo: {string, type}}."""
         return self._call(model, "fields_get", [], {"attributes": ["string", "type"]})
 
 
@@ -81,17 +137,28 @@ def coerce_id(value):
 
 
 class Resolver:
-    """
-    Resolve nomes para IDs no Odoo com cache por sessao.
-    Compartilhado por todos os scripts de importacao.
+    """Resolve nomes para IDs no Odoo com cache por sessao.
+
+    Aceita nome (str) ou ID (int) em todos os metodos — se for ID, retorna direto sem consultar.
+    Busca primeiro por correspondencia exata ('='), depois por ilike como fallback.
+    Resultados sao cacheados para evitar chamadas repetidas na mesma sessao.
 
     Uso:
         from odoo import OdooClient, Resolver
         odoo = OdooClient()
         r = Resolver(odoo)
-        r.project("Meu Projeto")      # -> int
-        r.stage("Backlog")            # -> int
-        r.tags(["CRM", "Vendas"])     # -> [(6, 0, [ids])]
+
+        r.project("Meu Projeto")                    # project.project -> int
+        r.stage("Backlog")                          # project.task.type -> int
+        r.milestone(project_id, "Marco 1")          # project.milestone -> int
+        r.tags(["CRM", "Vendas"])                   # project.tags -> [(6, 0, [ids])]
+        r.users(["user@deepstrat.com.br"])          # res.users -> [int]
+        r.partner("Nome do Cliente")                # res.partner -> int
+        r.product("Service on Timesheets")          # product.product -> int
+        r.uom("Hours")                              # uom.uom -> int
+        r.analytic_distribution({"Proj X": 100.0}) # -> {str(id): float}
+        r.crm_stage("Qualificados")                 # crm.stage -> int
+        r.employee("Nome do Funcionario")           # hr.employee -> int
     """
 
     def __init__(self, odoo):
@@ -99,7 +166,11 @@ class Resolver:
         self._cache = {}
 
     def _resolve(self, model, name_or_id, extra_domain=None):
-        """Busca registro por nome com cache. Tenta '=' exato, depois 'ilike'."""
+        """Busca ID de um registro pelo nome com cache. Tenta '=' exato, depois 'ilike'.
+
+        Raises:
+            ValueError: Se o nome nao for encontrado no modelo.
+        """
         id_ = coerce_id(name_or_id)
         if id_:
             return id_
@@ -117,27 +188,32 @@ class Resolver:
 
     # ── Projetos ──────────────────────────────────────────────────────────────
     def project(self, name_or_id):
+        """Resolve nome ou ID de projeto (project.project) -> int."""
         return self._resolve('project.project', name_or_id)
 
     def stage(self, name_or_id):
-        """Etapa de tarefa (project.task.type) — escopo global no Odoo."""
+        """Resolve etapa de tarefa (project.task.type) -> int. Escopo global no Odoo."""
         if name_or_id is None:
             return None
         return self._resolve('project.task.type', name_or_id)
 
     def milestone(self, project_id, name_or_id):
+        """Resolve marco de projeto (project.milestone) filtrado pelo project_id -> int."""
         if name_or_id is None:
             return None
         return self._resolve('project.milestone', name_or_id, [['project_id', '=', project_id]])
 
     def tags(self, names):
-        """Retorna [(6, 0, [ids])] para campos many2many de tags."""
+        """Resolve lista de nomes de tags (project.tags) -> [(6, 0, [ids])] para campo many2many."""
         if not names:
             return [(6, 0, [])]
         return [(6, 0, [self._resolve('project.tags', n) for n in names])]
 
     def users(self, names_or_ids):
-        """Resolve por login (email) ou nome. Retorna lista de IDs."""
+        """Resolve lista de emails ou nomes de usuarios (res.users) -> [int].
+
+        Busca primeiro por login (email exato), depois por nome ilike.
+        """
         if not names_or_ids:
             return []
         result = []
@@ -159,19 +235,27 @@ class Resolver:
 
     # ── Compras / Vendas / Financeiro ─────────────────────────────────────────
     def partner(self, name_or_id):
+        """Resolve nome ou ID de parceiro/cliente/fornecedor (res.partner) -> int."""
         return self._resolve('res.partner', name_or_id)
 
     def product(self, name_or_id):
+        """Resolve nome ou ID de produto (product.product) -> int."""
         return self._resolve('product.product', name_or_id)
 
     def uom(self, name_or_id):
+        """Resolve unidade de medida (uom.uom) -> int. Ex: 'Hours', 'Units'."""
         if name_or_id is None:
             return None
         return self._resolve('uom.uom', name_or_id)
 
     def analytic_distribution(self, analytic_dict):
-        """Converte {nome_ou_id: pct} -> {str(id): pct} para o campo analytic_distribution.
-        Valida que os percentuais somam 100%."""
+        """Converte {nome_ou_id: pct} -> {str(id): float} para o campo analytic_distribution.
+
+        Valida que os percentuais somam exatamente 100%.
+
+        Raises:
+            ValueError: Se a soma dos percentuais diferir de 100%.
+        """
         if not analytic_dict:
             return {}
         result = {
@@ -185,12 +269,14 @@ class Resolver:
 
     # ── CRM ───────────────────────────────────────────────────────────────────
     def crm_stage(self, name_or_id):
+        """Resolve etapa do CRM (crm.stage) -> int. Ex: 'Qualificados', 'Negociacao'."""
         if name_or_id is None:
             return None
         return self._resolve('crm.stage', name_or_id)
 
     # ── RH ────────────────────────────────────────────────────────────────────
     def employee(self, name_or_id):
+        """Resolve nome ou ID de funcionario (hr.employee) -> int."""
         return self._resolve('hr.employee', name_or_id)
 
 

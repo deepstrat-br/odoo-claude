@@ -1,6 +1,17 @@
 """
 MCP Server for Odoo — Deepstrat
-Expoe o Odoo XML-RPC como tools do Model Context Protocol.
+
+Expoe o Odoo ERP (deepstrat.odoo.com) via XML-RPC como ferramentas MCP.
+
+Tools genericas (CRUD): buscar, contar, ler_registro, criar_registro,
+    atualizar_registro, deletar_registro, listar_campos.
+Tools especializadas: listar_projetos, listar_tarefas, criar_tarefa, mover_tarefa,
+    lancar_horas, resumo_financeiro, pipeline_crm, resolver_nome.
+Tools de CRM/leads: leads_pendentes_qualificacao, qualificar_lead.
+Tools de WhatsApp: listar_templates_whatsapp, preview_whatsapp, enviar_whatsapp.
+
+MOEDA PADRAO: Todos os valores monetarios estao em BRL (Real brasileiro).
+Nunca assuma USD, EUR ou outra moeda — o padrao e sempre R$.
 """
 
 import json
@@ -10,7 +21,7 @@ from mcp.server.fastmcp import FastMCP
 from odoo import OdooClient, Resolver
 
 mcp = FastMCP(
-    "odoo-deepstrat",
+    "MCP Server for Odoo - by Deepstrat",
     instructions=(
         "Servidor MCP para o Odoo ERP da Deepstrat (deepstrat.odoo.com). "
         "Permite buscar, criar, atualizar e deletar registros, "
@@ -63,14 +74,21 @@ def buscar(
     limite: int = 20,
     ordem: str | None = None,
 ) -> str:
-    """Busca registros no Odoo via search_read.
+    """Busca multiplos registros no Odoo com filtros. Use ler_registro() para buscar um unico ID.
+
+    Returns JSON array com os registros encontrados.
+    Campos many2one retornam [id, "nome"]; use [0] para ID e [1] para nome.
 
     Args:
-        modelo: Nome do modelo Odoo (ex: 'res.partner', 'sale.order')
-        filtros: Domain filters no formato Odoo [[campo, op, valor], ...]. None = sem filtro.
-        campos: Lista de campos a retornar. None = todos.
-        limite: Maximo de registros (default 20).
-        ordem: Ordenacao (ex: 'name asc', 'date desc').
+        modelo: Modelo Odoo (ex: 'res.partner', 'sale.order', 'project.task').
+        filtros: Domain Odoo [[campo, operador, valor], ...].
+                 Operadores: '=', '!=', '>', '<', '>=', '<=', 'in', 'not in', 'ilike', 'like'.
+                 Ex: [["state", "=", "posted"], ["amount_total", ">", 1000]].
+                 None = sem filtro (retorna ate o limite).
+        campos: Campos a incluir. None = todos (pode ser volumoso — prefira listar apenas o necessario).
+                Ex: ["id", "name", "email_from", "stage_id"].
+        limite: Maximo de registros (default 20; use ate 200 para lotes).
+        ordem: Ordenacao SQL. Ex: 'name asc', 'create_date desc'.
     """
     odoo = get_odoo()
     records = odoo.search(
@@ -85,23 +103,29 @@ def buscar(
 
 @mcp.tool()
 def contar(modelo: str, filtros: list | None = None) -> int:
-    """Conta registros que atendem ao filtro.
+    """Conta registros que atendem ao filtro, sem retornar os dados. Mais rapido que buscar().
+
+    Use quando precisar apenas da quantidade (ex: quantas faturas em aberto?).
+
+    Returns inteiro com o total de registros.
 
     Args:
-        modelo: Nome do modelo Odoo.
-        filtros: Domain filters. None = sem filtro.
+        modelo: Modelo Odoo.
+        filtros: Domain Odoo. None = contar todos. Ex: [["state", "=", "posted"]].
     """
     return get_odoo().count(modelo, filters=filtros or [])
 
 
 @mcp.tool()
 def ler_registro(modelo: str, id: int, campos: list[str] | None = None) -> str:
-    """Le um unico registro pelo ID.
+    """Le um unico registro pelo ID. Mais eficiente que buscar() para registros individuais.
+
+    Returns JSON do registro, ou {"erro": "..."} se nao encontrado.
 
     Args:
-        modelo: Nome do modelo Odoo.
+        modelo: Modelo Odoo.
         id: ID do registro.
-        campos: Lista de campos. None = todos.
+        campos: Campos a retornar. None = todos.
     """
     record = get_odoo().get(modelo, id, fields=campos)
     if not record:
@@ -111,11 +135,19 @@ def ler_registro(modelo: str, id: int, campos: list[str] | None = None) -> str:
 
 @mcp.tool()
 def criar_registro(modelo: str, valores: dict) -> str:
-    """Cria um registro no Odoo.
+    """Cria um novo registro no Odoo. Para tarefas de projeto, prefira criar_tarefa() (mais ergonomico).
+
+    Returns JSON {"id": <novo_id>, "modelo": ..., "status": "criado"}.
+
+    ATENCAO: Alguns modelos exigem campos obrigatorios. Use listar_campos() para verificar
+    ou consulte a documentacao do modelo antes de criar.
 
     Args:
-        modelo: Nome do modelo Odoo.
-        valores: Dicionario de campos e valores.
+        modelo: Modelo Odoo.
+        valores: Campos e valores do registro.
+                 Campos many2one aceitam ID inteiro (ex: "project_id": 9).
+                 Many2many usam comandos Odoo: [(6, 0, [ids])] para substituir lista.
+                 Ex: {"name": "Nova Tarefa", "project_id": 9, "user_ids": [2]}.
     """
     record_id = get_odoo().create(modelo, valores)
     return json.dumps({"id": record_id, "modelo": modelo, "status": "criado"})
@@ -123,12 +155,15 @@ def criar_registro(modelo: str, valores: dict) -> str:
 
 @mcp.tool()
 def atualizar_registro(modelo: str, id: int, valores: dict) -> str:
-    """Atualiza um registro existente.
+    """Atualiza campos de um registro existente no Odoo (update parcial).
+
+    Returns JSON {"id": ..., "modelo": ..., "status": "atualizado"}.
 
     Args:
-        modelo: Nome do modelo Odoo.
+        modelo: Modelo Odoo.
         id: ID do registro.
-        valores: Campos a atualizar.
+        valores: Apenas os campos a modificar — nao precisa enviar todos os campos.
+                 Ex: {"priority": "1"} para marcar como urgente.
     """
     get_odoo().update(modelo, id, valores)
     return json.dumps({"id": id, "modelo": modelo, "status": "atualizado"})
@@ -136,11 +171,17 @@ def atualizar_registro(modelo: str, id: int, valores: dict) -> str:
 
 @mcp.tool()
 def deletar_registro(modelo: str, id: int) -> str:
-    """Deleta um registro.
+    """DESTRUTIVO — Deleta permanentemente um registro do Odoo. Acao irreversivel.
+
+    Confirme com o usuario antes de executar.
+    Para tarefas e leads, prefira arquivar (atualizar_registro com {"active": False})
+    em vez de deletar, pois preserva o historico.
+
+    Returns JSON {"id": ..., "modelo": ..., "status": "deletado"}.
 
     Args:
-        modelo: Nome do modelo Odoo.
-        id: ID do registro a deletar.
+        modelo: Modelo Odoo.
+        id: ID do registro a deletar permanentemente.
     """
     get_odoo().delete(modelo, id)
     return json.dumps({"id": id, "modelo": modelo, "status": "deletado"})
@@ -148,10 +189,15 @@ def deletar_registro(modelo: str, id: int) -> str:
 
 @mcp.tool()
 def listar_campos(modelo: str) -> str:
-    """Lista todos os campos de um modelo com tipo e label.
+    """Lista todos os campos de um modelo com nome tecnico, label em portugues e tipo.
+
+    Use antes de criar/atualizar registros para conhecer campos disponiveis.
+    Returns JSON objeto {campo: {label, tipo}} ordenado alfabeticamente.
+    Tipos comuns: char, text, integer, float, boolean, date, datetime,
+                  many2one, many2many, one2many, selection.
 
     Args:
-        modelo: Nome do modelo Odoo.
+        modelo: Modelo Odoo (ex: 'sale.order', 'crm.lead', 'project.task').
     """
     fields = get_odoo().fields(modelo)
     result = {
@@ -166,7 +212,13 @@ def listar_campos(modelo: str) -> str:
 
 @mcp.tool()
 def listar_projetos() -> str:
-    """Lista todos os projetos ativos com ID, nome, cliente, qtd de tarefas e prazo."""
+    """Lista todos os projetos ativos com ID, nome, cliente, total de tarefas e prazo.
+
+    Retorna apenas projetos com active=True. Para projetos arquivados,
+    use buscar('project.project', [['active', '=', False]]).
+
+    Returns JSON array [{id, nome, cliente, tarefas, prazo}, ...] ordenado por nome.
+    """
     odoo = get_odoo()
     records = odoo.search(
         "project.project",
@@ -194,13 +246,15 @@ def listar_tarefas(
     incluir_inativas: bool = False,
     limite: int = 50,
 ) -> str:
-    """Lista tarefas de um projeto.
+    """Lista tarefas de um projeto com etapa, horas planejadas/gastas, prazo e prioridade.
+
+    Returns JSON array [{id, nome, etapa, horas_planejadas, horas_gastas, prazo, prioridade}, ...].
 
     Args:
-        projeto: Nome ou ID do projeto.
-        etapa: Filtrar por etapa (ex: 'Em andamento'). None = todas.
-        incluir_inativas: Incluir tarefas arquivadas.
-        limite: Maximo de tarefas.
+        projeto: Nome ou ID do projeto (ex: 'Projeto Interno' ou 9).
+        etapa: Nome exato da etapa para filtrar (ex: 'Em andamento', 'Backlog'). None = todas.
+        incluir_inativas: True para incluir tarefas arquivadas. Default False.
+        limite: Maximo de tarefas a retornar (default 50).
     """
     r = get_resolver()
     project_id = r.project(projeto)
@@ -245,18 +299,20 @@ def criar_tarefa(
     tags: list[str] | None = None,
     prioridade: str = "normal",
 ) -> str:
-    """Cria uma tarefa em um projeto.
+    """Cria uma tarefa em um projeto. Prefira esta tool a criar_registro() — faz resolucao de nomes automaticamente.
+
+    Returns JSON {"id": <novo_id>, "nome", "projeto", "status": "criada"}.
 
     Args:
-        projeto: Nome ou ID do projeto.
+        projeto: Nome ou ID do projeto (ex: 'Projeto Interno' ou 9).
         nome: Titulo da tarefa.
-        horas: Horas planejadas (allocated_hours).
-        etapa: Nome da etapa (ex: 'Backlog', 'Em andamento'). None = padrao do projeto.
-        responsaveis: Lista de emails ou nomes dos responsaveis. None = usuario logado.
+        horas: Horas planejadas em allocated_hours (ex: 2.5 = 2h30min). Default 0.
+        etapa: Nome da etapa (ex: 'Backlog', 'A fazer', 'Em andamento'). None = etapa padrao do projeto.
+        responsaveis: Lista de emails ou nomes (ex: ['vagner@deepstrat.com.br']). None = usuario logado.
         prazo: Data limite no formato YYYY-MM-DD.
-        descricao: Descricao da tarefa (HTML aceito).
-        tags: Lista de nomes de tags.
-        prioridade: 'normal' ou 'urgente'.
+        descricao: Descricao da tarefa (HTML aceito ou texto simples).
+        tags: Lista de nomes de tags existentes (ex: ['CRM', 'Vendas']).
+        prioridade: 'normal' (default) ou 'urgente'.
     """
     r = get_resolver()
     vals = {
@@ -285,11 +341,13 @@ def criar_tarefa(
 
 @mcp.tool()
 def mover_tarefa(tarefa_id: int, etapa: str) -> str:
-    """Move uma tarefa para outra etapa.
+    """Move uma tarefa para outra etapa. Equivale a arrastar o card no Kanban.
+
+    Returns JSON {"id": ..., "etapa": ..., "status": "movida"}.
 
     Args:
         tarefa_id: ID da tarefa.
-        etapa: Nome da etapa destino (ex: 'Em andamento', 'Concluido').
+        etapa: Nome exato da etapa destino (ex: 'Em andamento', 'Concluido', 'Cancelado').
     """
     r = get_resolver()
     stage_id = r.stage(etapa)
@@ -299,7 +357,13 @@ def mover_tarefa(tarefa_id: int, etapa: str) -> str:
 
 @mcp.tool()
 def resumo_financeiro() -> str:
-    """Retorna resumo financeiro: faturas em aberto, vencidas e pedidos de venda."""
+    """Retorna painel financeiro: faturas a receber/vencidas, contas a pagar e pedidos de venda abertos.
+
+    Todos os valores monetarios estao em BRL (Real brasileiro).
+
+    Returns JSON {data, moeda, faturas_em_aberto, faturas_vencidas, total_a_receber_BRL,
+                  pedidos_venda_abertos, contas_a_pagar, total_a_pagar_BRL}.
+    """
     odoo = get_odoo()
     hoje = str(date.today())
 
@@ -359,12 +423,18 @@ def pipeline_crm(
     responsavel: str | None = None,
     limite: int = 20,
 ) -> str:
-    """Lista oportunidades do CRM.
+    """Lista oportunidades do CRM com receita esperada, probabilidade e etapa.
+
+    Use leads_pendentes_qualificacao() para ver leads novos nao qualificados.
+    Valores monetarios em BRL.
+
+    Returns JSON array [{id, nome, cliente, etapa, receita_esperada, moeda,
+                        probabilidade, prazo, responsavel}, ...] ordenado por receita desc.
 
     Args:
-        etapa: Filtrar por etapa (ex: 'Qualificados', 'Negociacao'). None = todas.
-        responsavel: Email ou nome do responsavel. None = todos.
-        limite: Maximo de oportunidades.
+        etapa: Nome da etapa CRM (ex: 'Qualificados', 'Negociacao', 'Won'). None = todas.
+        responsavel: Email ou nome do responsavel. None = todos os responsaveis.
+        limite: Maximo de oportunidades (default 20).
     """
     r = get_resolver()
     filters = [["type", "=", "opportunity"]]
@@ -409,15 +479,17 @@ def lancar_horas(
     data: str | None = None,
     funcionario: str | int | None = None,
 ) -> str:
-    """Lanca horas (timesheet) em um projeto/tarefa.
+    """Lanca uma entrada de timesheet (account.analytic.line) em um projeto ou tarefa.
+
+    Returns JSON {"id": <id_da_linha>, "horas", "projeto", "status": "lancado"}.
 
     Args:
         projeto: Nome ou ID do projeto.
-        tarefa: Nome ou ID da tarefa. None = sem tarefa.
-        horas: Quantidade de horas.
-        descricao: Descricao da atividade.
-        data: Data no formato YYYY-MM-DD. None = hoje.
-        funcionario: Nome ou ID do funcionario. None = usuario logado.
+        tarefa: Nome ou ID da tarefa dentro do projeto. None = timesheet sem tarefa especifica.
+        horas: Horas a lancar (ex: 1.5 = 1h30min).
+        descricao: Descricao da atividade realizada.
+        data: Data no formato YYYY-MM-DD. None = data de hoje.
+        funcionario: Nome ou ID do funcionario. None = funcionario do usuario logado.
     """
     r = get_resolver()
     odoo = get_odoo()
@@ -460,11 +532,15 @@ def lancar_horas(
 
 @mcp.tool()
 def resolver_nome(modelo: str, nome: str) -> str:
-    """Resolve um nome para ID no Odoo (busca exata, depois ilike).
+    """Resolve um nome textual para ID numerico no Odoo (busca exata, depois ilike).
+
+    Use para descobrir IDs antes de usa-los em filtros ou campos de outros modelos.
+
+    Returns JSON {"modelo", "nome", "id"}.
 
     Args:
-        modelo: Nome do modelo Odoo (ex: 'res.partner', 'product.product').
-        nome: Nome a buscar.
+        modelo: Modelo Odoo (ex: 'res.partner', 'product.product', 'project.task.type').
+        nome: Nome a buscar. Aceita nome parcial via ilike como fallback.
     """
     r = get_resolver()
     record_id = r._resolve(modelo, nome)
@@ -492,15 +568,14 @@ _METODOLOGIA_RESUMO = (
 
 @mcp.tool()
 def leads_pendentes_qualificacao(limite: int = 30) -> str:
-    """Retorna leads novos que ainda nao foram qualificados/enriquecidos.
+    """Retorna leads novos nao qualificados (stage=Novos, priority=0, sem pesquisa na descricao).
 
-    Leads pendentes sao aqueles com priority='0' e sem pesquisa na descricao.
-    Retorna os dados do lead junto com a metodologia de qualificacao resumida.
+    Inclui a metodologia de qualificacao na resposta para guiar o processo.
+    Apos obter a lista, pesquise cada empresa online e chame qualificar_lead() para cada um.
 
-    Para cada lead retornado, voce deve:
-    1. Pesquisar a empresa online (Google, redes sociais, CNPJ)
-    2. Avaliar potencial e definir prioridade (0-3 estrelas)
-    3. Chamar qualificar_lead() para aplicar a atualizacao
+    Returns JSON {total_pendentes, leads: [{id, nome_lead, contato, empresa_informada,
+                  telefone, email, website, cidade, estado, criado_em, descricao_raw}],
+                  metodologia}.
 
     Args:
         limite: Maximo de leads a retornar (default 30).
@@ -568,24 +643,25 @@ def qualificar_lead(
     website: str | None = None,
     nota_atividade: str | None = None,
 ) -> str:
-    """Aplica a qualificacao em um lead do CRM.
+    """Aplica qualificacao em um lead: atualiza prioridade, nomes, pesquisa e executa acoes automaticas.
 
-    Atualiza prioridade, nomes, descricao com pesquisa.
-    Acoes automaticas por prioridade:
-    - Prioridade 3: envia WhatsApp de abordagem (template 17) + cria atividade Call.
-    - Prioridade 2: cria atividade de revisao manual (To Do).
-    - Prioridade 0-1: apenas atualiza dados, sem acao adicional.
+    Acoes automaticas por nivel de prioridade:
+    - 3 (alto): envia WhatsApp template 17 (Abordagem Leads) + cria atividade Call para hoje.
+    - 2 (medio): cria atividade To Do de revisao para hoje.
+    - 0-1: apenas atualiza dados, sem acao adicional.
+
+    Returns JSON {id, prioridade, status, atividade_id?, atividade?, whatsapp?}.
 
     Args:
-        lead_id: ID do lead no Odoo.
-        prioridade: 0 (spam/baixo), 1 (pouco potencial), 2 (medio), 3 (alto).
-        nome_contato: Nome do contato corrigido (Title Case). None = nao alterar.
-        empresa: Nome da empresa corrigido. None = nao alterar.
+        lead_id: ID do lead (crm.lead).
+        prioridade: 0=spam/bot, 1=micro/pouca info, 2=medio potencial, 3=alto potencial confirmado.
+        nome_contato: Nome do contato em Title Case. None = manter atual.
+        empresa: Nome da empresa em Title Case. None = manter atual.
         titulo: Titulo do lead. None = gerar automaticamente como 'Lead Odoo: Nome — Empresa'.
-        pesquisa: Texto da pesquisa sobre a empresa (sera adicionado ao campo descricao).
-        potencial: Avaliacao do potencial (ex: 'Alto. E-commerce com produto real.').
-        website: URL do site da empresa. None = nao alterar.
-        nota_atividade: Nota HTML para a atividade (Call ou To Do). Recomendado para prioridade 2 e 3.
+        pesquisa: Texto resumindo a pesquisa online sobre a empresa (salvo na descricao do lead).
+        potencial: Avaliacao curta do potencial (ex: 'Alto. E-commerce com produto real.').
+        website: URL do site encontrado na pesquisa. None = nao alterar.
+        nota_atividade: HTML para a nota da atividade criada. Recomendado para prioridade 2 e 3.
     """
     odoo = get_odoo()
 
@@ -725,11 +801,17 @@ def listar_templates_whatsapp(
     modelo: str | None = None,
     apenas_aprovados: bool = True,
 ) -> str:
-    """Lista templates de WhatsApp disponiveis no Odoo.
+    """Lista templates de WhatsApp com corpo, variaveis e modelo vinculado.
+
+    Use antes de enviar_whatsapp() ou preview_whatsapp() para obter o template_id correto.
+
+    Returns JSON array [{id, nome, template_name, modelo, corpo, header, footer, conta,
+                        variaveis: [{placeholder, tipo, campo, exemplo}]}, ...].
+    Variaveis tipo 'field' sao preenchidas automaticamente; tipo 'free_text' devem ser passadas manualmente.
 
     Args:
-        modelo: Filtrar por modelo vinculado (ex: 'crm.lead', 'account.move'). None = todos.
-        apenas_aprovados: Se True, retorna apenas templates com status 'approved'.
+        modelo: Filtrar por modelo Odoo vinculado (ex: 'crm.lead', 'account.move'). None = todos.
+        apenas_aprovados: True (default) retorna apenas templates aprovados pelo Meta/WhatsApp.
     """
     odoo = get_odoo()
     filters = []
@@ -797,21 +879,22 @@ def enviar_whatsapp(
     telefone: str | None = None,
     textos_livres: dict[str, str] | None = None,
 ) -> str:
-    """Envia uma mensagem de WhatsApp usando um template aprovado do Odoo.
+    """ACAO REAL — Envia mensagem WhatsApp via template aprovado. Acao irreversivel.
 
-    O template ja esta vinculado a um modelo (ex: crm.lead, account.move).
-    O registro_id deve ser um ID valido desse modelo.
-    Variaveis do tipo 'field' sao preenchidas automaticamente pelo Odoo a partir do registro.
-    Variaveis do tipo 'free_text' devem ser passadas via textos_livres.
+    SEMPRE use preview_whatsapp() primeiro para confirmar o conteudo da mensagem.
+    SEMPRE confirme com o usuario antes de executar este envio.
 
-    ATENCAO: Esta acao envia uma mensagem real via WhatsApp. Confirme com o usuario antes de executar.
+    Variaveis tipo 'field' sao preenchidas automaticamente a partir do registro.
+    Variaveis tipo 'free_text' devem ser passadas via textos_livres.
+
+    Returns JSON {status, template, modelo, registro_id, mensagem_id, telefone, estado}.
 
     Args:
-        template_id: ID do template de WhatsApp (use listar_templates_whatsapp para ver opcoes).
-        registro_id: ID do registro no modelo vinculado ao template.
-        telefone: Numero de telefone (override). None = usa o telefone do registro.
+        template_id: ID do template (use listar_templates_whatsapp() para listar disponiveis).
+        registro_id: ID do registro no modelo vinculado ao template (ex: ID do crm.lead).
+        telefone: Telefone em formato internacional (ex: '+5541999999999'). None = usa o do registro.
         textos_livres: Valores para variaveis free_text, ex: {"1": "Joao", "2": "14:00"}.
-                       As chaves sao os numeros das variaveis (sem chaves duplas).
+                       As chaves sao os numeros das variaveis sem as chaves duplas.
     """
     odoo = get_odoo()
 
@@ -896,15 +979,18 @@ def preview_whatsapp(
     telefone: str | None = None,
     textos_livres: dict[str, str] | None = None,
 ) -> str:
-    """Gera um preview da mensagem WhatsApp SEM enviar.
+    """Gera preview da mensagem WhatsApp SEM enviar. Sem efeito colateral.
 
-    Util para verificar como a mensagem ficara antes de confirmar o envio.
+    Use SEMPRE antes de enviar_whatsapp() para verificar o conteudo final da mensagem.
+    Cria um composer temporario, le o preview e o descarta sem enviar.
+
+    Returns JSON {template, telefone, preview} com o texto final da mensagem ja interpolado.
 
     Args:
         template_id: ID do template de WhatsApp.
         registro_id: ID do registro no modelo vinculado ao template.
-        telefone: Numero de telefone (override). None = usa o telefone do registro.
-        textos_livres: Valores para variaveis free_text.
+        telefone: Override de telefone. None = usa o do registro.
+        textos_livres: Valores para variaveis free_text, no mesmo formato de enviar_whatsapp().
     """
     odoo = get_odoo()
 
