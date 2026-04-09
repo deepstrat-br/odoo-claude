@@ -91,13 +91,13 @@ O `mcp_server.py` expoe o Odoo como tools via [Model Context Protocol](https://m
 
 ### Tools disponiveis
 
-| Categoria | Tools |
-|---|---|
-| **CRUD generico** | `buscar`, `contar`, `ler_registro`, `criar_registro`, `atualizar_registro`, `deletar_registro`, `listar_campos`, `resolver_nome` |
-| **Projetos & Tarefas** | `listar_projetos`, `listar_tarefas`, `criar_tarefa`, `mover_tarefa`, `lancar_horas` |
-| **CRM** | `pipeline_crm`, `leads_pendentes_qualificacao`, `qualificar_lead` |
-| **Financeiro** | `resumo_financeiro` |
-| **WhatsApp** | `listar_templates_whatsapp`, `enviar_whatsapp`, `preview_whatsapp` |
+| Categoria              | Tools                                                                                                                            |
+| ---------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| **CRUD generico**      | `buscar`, `contar`, `ler_registro`, `criar_registro`, `atualizar_registro`, `deletar_registro`, `listar_campos`, `resolver_nome` |
+| **Projetos & Tarefas** | `listar_projetos`, `listar_tarefas`, `criar_tarefa`, `mover_tarefa`, `lancar_horas`                                              |
+| **CRM**                | `pipeline_crm`, `leads_pendentes_qualificacao`, `qualificar_lead`                                                                |
+| **Financeiro**         | `resumo_financeiro`                                                                                                              |
+| **WhatsApp**           | `listar_templates_whatsapp`, `enviar_whatsapp`, `preview_whatsapp`                                                               |
 
 ### Como usar com Claude Code
 
@@ -140,13 +140,14 @@ python scripts/project/import_tasks.py data/tasks/cliente.yaml --projeto "Nome"
 ```
 
 **Formato YAML:**
+
 ```yaml
-project: "Nome do Projeto"   # nome ou ID
+project: "Nome do Projeto" # nome ou ID
 
 tasks:
   - name: "Titulo da tarefa"
-    stage: "Backlog"           # nome ou ID
-    milestone: "Marco 1"      # nome ou ID
+    stage: "Backlog" # nome ou ID
+    milestone: "Marco 1" # nome ou ID
     hours: 4.0
     deadline: "2026-05-01"
     tags: [Planejamento, CRM]
@@ -164,6 +165,7 @@ python scripts/purchase/import_po.py data/purchase/contrato.yaml --dry-run
 ```
 
 **Formato YAML:**
+
 ```yaml
 partner: "Nome do Fornecedor"
 
@@ -229,27 +231,27 @@ r.tags(["CRM", "Vendas"])            # project.tags -> [(6, 0, [ids])]
 
 ## Modelos Odoo mais usados
 
-| Modelo | Descricao |
-|---|---|
-| `res.partner` | Contatos (clientes, fornecedores) |
-| `sale.order` | Pedidos de venda |
-| `purchase.order` | Pedidos de compra |
-| `account.move` | Faturas e lancamentos contabeis |
-| `project.project` | Projetos |
-| `project.task` | Tarefas |
-| `account.analytic.line` | Timesheets (horas lancadas) |
-| `crm.lead` | Leads e oportunidades CRM |
-| `hr.employee` | Funcionarios |
-| `whatsapp.template` | Templates de WhatsApp Business |
-| `whatsapp.message` | Mensagens WhatsApp enviadas |
+| Modelo                  | Descricao                         |
+| ----------------------- | --------------------------------- |
+| `res.partner`           | Contatos (clientes, fornecedores) |
+| `sale.order`            | Pedidos de venda                  |
+| `purchase.order`        | Pedidos de compra                 |
+| `account.move`          | Faturas e lancamentos contabeis   |
+| `project.project`       | Projetos                          |
+| `project.task`          | Tarefas                           |
+| `account.analytic.line` | Timesheets (horas lancadas)       |
+| `crm.lead`              | Leads e oportunidades CRM         |
+| `hr.employee`           | Funcionarios                      |
+| `whatsapp.template`     | Templates de WhatsApp Business    |
+| `whatsapp.message`      | Mensagens WhatsApp enviadas       |
 
 ---
 
 ## Documentacao
 
-| Documento | Conteudo |
-|---|---|
-| [CLAUDE.md](CLAUDE.md) | Referencia completa — modelos, campos, Resolver, dicas |
-| [docs/projetos-timesheets.md](docs/projetos-timesheets.md) | Fluxo de etapas, convencoes de timesheet, metricas |
-| [docs/clockify.md](docs/clockify.md) | Integracao Clockify x Odoo, fechamento mensal |
-| [docs/qualificacao-leads.md](docs/qualificacao-leads.md) | Metodologia de enriquecimento e priorizacao de leads |
+| Documento                                                  | Conteudo                                               |
+| ---------------------------------------------------------- | ------------------------------------------------------ |
+| [CLAUDE.md](CLAUDE.md)                                     | Referencia completa — modelos, campos, Resolver, dicas |
+| [docs/projetos-timesheets.md](docs/projetos-timesheets.md) | Fluxo de etapas, convencoes de timesheet, metricas     |
+| [docs/clockify.md](docs/clockify.md)                       | Integracao Clockify x Odoo, fechamento mensal          |
+| [docs/qualificacao-leads.md](docs/qualificacao-leads.md)   | Metodologia de enriquecimento e priorizacao de leads   |
