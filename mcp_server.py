@@ -4,6 +4,7 @@ Expoe o Odoo XML-RPC como tools do Model Context Protocol.
 """
 
 import json
+import re
 from datetime import date, datetime
 from mcp.server.fastmcp import FastMCP
 from odoo import OdooClient, Resolver
@@ -13,12 +14,15 @@ mcp = FastMCP(
     instructions=(
         "Servidor MCP para o Odoo ERP da Deepstrat (deepstrat.odoo.com). "
         "Permite buscar, criar, atualizar e deletar registros, "
-        "alem de operacoes especializadas para projetos, tarefas, CRM e financeiro. "
+        "alem de operacoes especializadas para projetos, tarefas, CRM, financeiro e WhatsApp. "
         "IMPORTANTE — MOEDA: A empresa Deepstrat opera no Brasil. "
         "A moeda base do Odoo é BRL (Real brasileiro, simbolo R$). "
         "Todos os valores monetarios retornados estao em BRL, salvo quando "
         "o campo 'moeda' ou 'currency_id' indicar explicitamente outra moeda. "
-        "NUNCA assuma USD, EUR ou outra moeda — o padrao é SEMPRE R$ (BRL)."
+        "NUNCA assuma USD, EUR ou outra moeda — o padrao é SEMPRE R$ (BRL). "
+        "QUALIFICACAO DE LEADS: Use leads_pendentes_qualificacao() para obter leads novos "
+        "e a metodologia de qualificacao. Pesquise cada empresa online e use qualificar_lead() "
+        "para aplicar. Para leads com prioridade 3, crie atividade de ligacao."
     ),
 )
 
@@ -465,6 +469,491 @@ def resolver_nome(modelo: str, nome: str) -> str:
     r = get_resolver()
     record_id = r._resolve(modelo, nome)
     return json.dumps({"modelo": modelo, "nome": nome, "id": record_id})
+
+
+# ─── Qualificacao de Leads ───────────────────────────────────────────────────
+
+# Metodologia completa em docs/qualificacao-leads.md
+_METODOLOGIA_RESUMO = (
+    "METODOLOGIA DE QUALIFICACAO:\n"
+    "1. Para cada lead, pesquise a empresa online (Google, Instagram, site, CNPJ).\n"
+    "2. Analise sinais: site proprio (+), email corporativo (+), presenca digital (+), "
+    "email .edu.br (-), nome sem sentido (-), telefone incompleto (-).\n"
+    "3. Classifique: 3=empresa real confirmada com necessidade ERP, "
+    "2=provavelmente real mas sem confirmacao, 1=pouca info/micro, 0=spam/bot/academico.\n"
+    "4. Atualize: capitalizar nomes, preencher empresa, adicionar pesquisa na descricao, "
+    "definir prioridade, adicionar website se encontrado.\n"
+    "5. Para leads prioridade 3: enviar WhatsApp de abordagem (auto) + criar atividade Call.\n"
+    "   Para leads prioridade 2: criar atividade de revisao manual (To Do).\n"
+    "6. Titulo padrao: 'Lead Odoo: Nome do Contato — Empresa'.\n"
+    "Detalhes completos: docs/qualificacao-leads.md"
+)
+
+
+@mcp.tool()
+def leads_pendentes_qualificacao(limite: int = 30) -> str:
+    """Retorna leads novos que ainda nao foram qualificados/enriquecidos.
+
+    Leads pendentes sao aqueles com priority='0' e sem pesquisa na descricao.
+    Retorna os dados do lead junto com a metodologia de qualificacao resumida.
+
+    Para cada lead retornado, voce deve:
+    1. Pesquisar a empresa online (Google, redes sociais, CNPJ)
+    2. Avaliar potencial e definir prioridade (0-3 estrelas)
+    3. Chamar qualificar_lead() para aplicar a atualizacao
+
+    Args:
+        limite: Maximo de leads a retornar (default 30).
+    """
+    odoo = get_odoo()
+    records = odoo.search(
+        "crm.lead",
+        filters=[
+            ["type", "=", "lead"],
+            ["priority", "=", "0"],
+            ["stage_id.name", "=", "Novos"],
+        ],
+        fields=[
+            "id", "name", "contact_name", "partner_name",
+            "phone", "email_from", "website",
+            "description", "city", "state_id", "country_id",
+            "create_date",
+        ],
+        limit=limite,
+        order="create_date desc",
+    )
+
+    # Filtrar apenas leads sem pesquisa na descricao
+    pendentes = []
+    for r in records:
+        desc = r.get("description") or ""
+        if "<b>Pesquisa:</b>" not in desc:
+            # Extrair "Company:" da descricao se existir
+            company = ""
+            if "Company:" in desc:
+                try:
+                    company = desc.split("Company:")[1].split("<")[0].strip()
+                except (IndexError, AttributeError):
+                    pass
+            pendentes.append({
+                "id": r["id"],
+                "nome_lead": r["name"],
+                "contato": r["contact_name"] or "",
+                "empresa_informada": r["partner_name"] or company or "",
+                "telefone": r["phone"] or "",
+                "email": r["email_from"] or "",
+                "website": r["website"] or "",
+                "cidade": r["city"] or "",
+                "estado": r["state_id"][1] if r["state_id"] else "",
+                "criado_em": r["create_date"],
+                "descricao_raw": desc,
+            })
+
+    return json.dumps({
+        "total_pendentes": len(pendentes),
+        "leads": pendentes,
+        "metodologia": _METODOLOGIA_RESUMO,
+    }, default=serialize, ensure_ascii=False)
+
+
+@mcp.tool()
+def qualificar_lead(
+    lead_id: int,
+    prioridade: int,
+    nome_contato: str | None = None,
+    empresa: str | None = None,
+    titulo: str | None = None,
+    pesquisa: str = "",
+    potencial: str = "",
+    website: str | None = None,
+    nota_atividade: str | None = None,
+) -> str:
+    """Aplica a qualificacao em um lead do CRM.
+
+    Atualiza prioridade, nomes, descricao com pesquisa.
+    Acoes automaticas por prioridade:
+    - Prioridade 3: envia WhatsApp de abordagem (template 17) + cria atividade Call.
+    - Prioridade 2: cria atividade de revisao manual (To Do).
+    - Prioridade 0-1: apenas atualiza dados, sem acao adicional.
+
+    Args:
+        lead_id: ID do lead no Odoo.
+        prioridade: 0 (spam/baixo), 1 (pouco potencial), 2 (medio), 3 (alto).
+        nome_contato: Nome do contato corrigido (Title Case). None = nao alterar.
+        empresa: Nome da empresa corrigido. None = nao alterar.
+        titulo: Titulo do lead. None = gerar automaticamente como 'Lead Odoo: Nome — Empresa'.
+        pesquisa: Texto da pesquisa sobre a empresa (sera adicionado ao campo descricao).
+        potencial: Avaliacao do potencial (ex: 'Alto. E-commerce com produto real.').
+        website: URL do site da empresa. None = nao alterar.
+        nota_atividade: Nota HTML para a atividade (Call ou To Do). Recomendado para prioridade 2 e 3.
+    """
+    odoo = get_odoo()
+
+    # Buscar lead atual
+    lead = odoo.get("crm.lead", lead_id,
+                     fields=["id", "description", "contact_name", "partner_name", "phone"])
+    if not lead:
+        return json.dumps({"erro": f"Lead {lead_id} nao encontrado"})
+
+    vals = {"priority": str(prioridade)}
+
+    if nome_contato:
+        vals["contact_name"] = nome_contato
+    if empresa:
+        vals["partner_name"] = empresa
+
+    # Gerar titulo automaticamente se nao fornecido
+    if titulo:
+        vals["name"] = titulo
+    else:
+        nome = nome_contato or lead.get("contact_name") or ""
+        emp = empresa or lead.get("partner_name") or ""
+        if nome and emp:
+            vals["name"] = f"Lead Odoo: {nome} \u2014 {emp}"
+        elif nome:
+            vals["name"] = f"Lead Odoo: {nome}"
+
+    # Montar descricao com pesquisa
+    if pesquisa:
+        desc_atual = lead.get("description") or ""
+        # Preservar Source/Company original
+        source_block = ""
+        if "Source:" in desc_atual:
+            try:
+                source_block = desc_atual.split("</p>")[0] + "</p>"
+            except (IndexError, AttributeError):
+                source_block = desc_atual
+
+        desc_nova = source_block
+        desc_nova += f"<p><b>Pesquisa:</b> {pesquisa}</p>"
+        if potencial:
+            desc_nova += f"<p><b>Potencial:</b> {potencial}</p>"
+        vals["description"] = desc_nova
+
+    if website:
+        vals["website"] = website
+
+    odoo.update("crm.lead", lead_id, vals)
+
+    resultado = {
+        "id": lead_id,
+        "prioridade": prioridade,
+        "status": "qualificado",
+    }
+
+    nome_display = nome_contato or lead.get("contact_name") or ""
+    emp_display = empresa or lead.get("partner_name") or ""
+
+    # Buscar model_id de crm.lead (cacheado internamente pelo Odoo)
+    model_rec = odoo.search("ir.model", [["model", "=", "crm.lead"]], ["id"], limit=1)
+    model_id = model_rec[0]["id"] if model_rec else 618
+
+    # === PRIORIDADE 3: WhatsApp automatico + atividade Call ===
+    if prioridade >= 3:
+        # 1) Enviar WhatsApp de abordagem (template 17 = "Abordagem Leads enviados pela Odoo")
+        phone = lead.get("phone") or ""
+        if phone and len(phone.replace(" ", "").replace("-", "").replace("+", "")) >= 12:
+            try:
+                composer_vals = {
+                    "wa_template_id": 17,
+                    "res_model": "crm.lead",
+                    "res_ids": str([lead_id]),
+                }
+                context = {"active_model": "crm.lead", "active_ids": [lead_id]}
+                composer_id = odoo._call(
+                    "whatsapp.composer", "create",
+                    [composer_vals], {"context": context},
+                )
+                odoo._call(
+                    "whatsapp.composer", "action_send_whatsapp_template",
+                    [[composer_id]], {"context": context},
+                )
+                resultado["whatsapp"] = f"Enviado para {phone}"
+            except Exception as e:
+                resultado["whatsapp_erro"] = str(e)
+        else:
+            resultado["whatsapp"] = f"Nao enviado — telefone invalido ou incompleto: {phone}"
+
+        # 2) Criar atividade Call
+        act_vals = {
+            "res_model_id": model_id,
+            "res_model": "crm.lead",
+            "res_id": lead_id,
+            "activity_type_id": 2,  # Call
+            "summary": f"Ligar para {nome_display} ({emp_display})",
+            "date_deadline": str(date.today()),
+            "user_id": odoo.uid,
+        }
+        if nota_atividade:
+            act_vals["note"] = nota_atividade
+
+        act_id = odoo.create("mail.activity", act_vals)
+        resultado["atividade_id"] = act_id
+        resultado["atividade"] = f"Call agendada: {nome_display} ({emp_display})"
+
+    # === PRIORIDADE 2: atividade de revisao manual ===
+    elif prioridade == 2:
+        note = nota_atividade or (
+            f"<p>Lead qualificado automaticamente com prioridade 2 (media).</p>"
+            f"<p><b>Empresa:</b> {emp_display}</p>"
+            f"<p><b>Pesquisa:</b> {pesquisa[:300]}{'...' if len(pesquisa) > 300 else ''}</p>"
+            f"<p><b>Decisao necessaria:</b> Avaliar se vale abordar via WhatsApp/ligacao "
+            f"ou arquivar o lead.</p>"
+        )
+        act_vals = {
+            "res_model_id": model_id,
+            "res_model": "crm.lead",
+            "res_id": lead_id,
+            "activity_type_id": 4,  # To Do
+            "summary": f"Revisar lead: {nome_display} ({emp_display})",
+            "date_deadline": str(date.today()),
+            "user_id": odoo.uid,
+            "note": note,
+        }
+        act_id = odoo.create("mail.activity", act_vals)
+        resultado["atividade_id"] = act_id
+        resultado["atividade"] = f"Revisao agendada: {nome_display} ({emp_display})"
+
+    return json.dumps(resultado, default=serialize, ensure_ascii=False)
+
+
+# ─── WhatsApp ────────────────────────────────────────────────────────────────
+
+
+@mcp.tool()
+def listar_templates_whatsapp(
+    modelo: str | None = None,
+    apenas_aprovados: bool = True,
+) -> str:
+    """Lista templates de WhatsApp disponiveis no Odoo.
+
+    Args:
+        modelo: Filtrar por modelo vinculado (ex: 'crm.lead', 'account.move'). None = todos.
+        apenas_aprovados: Se True, retorna apenas templates com status 'approved'.
+    """
+    odoo = get_odoo()
+    filters = []
+    if apenas_aprovados:
+        filters.append(["status", "=", "approved"])
+    if modelo:
+        filters.append(["model", "=", modelo])
+
+    templates = odoo.search(
+        "whatsapp.template",
+        filters=filters,
+        fields=[
+            "id", "name", "template_name", "status", "body",
+            "header_type", "header_text", "footer_text",
+            "template_type", "model", "phone_field",
+            "variable_ids", "wa_account_id",
+        ],
+        limit=50,
+        order="name asc",
+    )
+
+    # Enriquecer com info das variaveis
+    all_var_ids = []
+    for t in templates:
+        all_var_ids.extend(t["variable_ids"])
+
+    vars_map = {}
+    if all_var_ids:
+        variables = odoo.search(
+            "whatsapp.template.variable",
+            filters=[["id", "in", all_var_ids]],
+            fields=["id", "name", "line_type", "field_type", "field_name", "demo_value", "wa_template_id"],
+            limit=200,
+        )
+        for v in variables:
+            tmpl_id = v["wa_template_id"][0]
+            vars_map.setdefault(tmpl_id, []).append({
+                "placeholder": v["name"],
+                "tipo": v["field_type"],
+                "campo": v["field_name"] or None,
+                "exemplo": v["demo_value"] or None,
+            })
+
+    rows = []
+    for t in templates:
+        rows.append({
+            "id": t["id"],
+            "nome": t["name"],
+            "template_name": t["template_name"],
+            "modelo": t["model"],
+            "corpo": t["body"],
+            "header": t["header_text"] or None,
+            "footer": t["footer_text"] or None,
+            "conta": t["wa_account_id"][1] if t["wa_account_id"] else None,
+            "variaveis": vars_map.get(t["id"], []),
+        })
+
+    return json.dumps(rows, default=serialize, ensure_ascii=False)
+
+
+@mcp.tool()
+def enviar_whatsapp(
+    template_id: int,
+    registro_id: int,
+    telefone: str | None = None,
+    textos_livres: dict[str, str] | None = None,
+) -> str:
+    """Envia uma mensagem de WhatsApp usando um template aprovado do Odoo.
+
+    O template ja esta vinculado a um modelo (ex: crm.lead, account.move).
+    O registro_id deve ser um ID valido desse modelo.
+    Variaveis do tipo 'field' sao preenchidas automaticamente pelo Odoo a partir do registro.
+    Variaveis do tipo 'free_text' devem ser passadas via textos_livres.
+
+    ATENCAO: Esta acao envia uma mensagem real via WhatsApp. Confirme com o usuario antes de executar.
+
+    Args:
+        template_id: ID do template de WhatsApp (use listar_templates_whatsapp para ver opcoes).
+        registro_id: ID do registro no modelo vinculado ao template.
+        telefone: Numero de telefone (override). None = usa o telefone do registro.
+        textos_livres: Valores para variaveis free_text, ex: {"1": "Joao", "2": "14:00"}.
+                       As chaves sao os numeros das variaveis (sem chaves duplas).
+    """
+    odoo = get_odoo()
+
+    # Buscar o template para saber o modelo vinculado
+    template = odoo.get("whatsapp.template", template_id,
+                        fields=["model", "status", "name"])
+    if not template:
+        return json.dumps({"erro": f"Template {template_id} nao encontrado"})
+    if template["status"] != "approved":
+        return json.dumps({"erro": f"Template '{template['name']}' nao esta aprovado (status: {template['status']})"})
+
+    res_model = template["model"]
+
+    # Verificar se o registro existe
+    record = odoo.get(res_model, registro_id, fields=["id"])
+    if not record:
+        return json.dumps({"erro": f"Registro {registro_id} nao encontrado em {res_model}"})
+
+    # Montar valores do composer
+    composer_vals = {
+        "wa_template_id": template_id,
+        "res_model": res_model,
+        "res_ids": str([registro_id]),
+    }
+    if telefone:
+        composer_vals["phone"] = telefone
+
+    # Preencher textos livres
+    if textos_livres:
+        for key, value in textos_livres.items():
+            field_name = f"free_text_{key}"
+            composer_vals[field_name] = value
+
+    context = {
+        "active_model": res_model,
+        "active_ids": [registro_id],
+    }
+
+    # Criar o composer
+    composer_id = odoo._call(
+        "whatsapp.composer", "create",
+        [composer_vals],
+        {"context": context},
+    )
+
+    # Enviar
+    try:
+        result = odoo._call(
+            "whatsapp.composer", "action_send_whatsapp_template",
+            [[composer_id]],
+            {"context": context},
+        )
+    except Exception as e:
+        return json.dumps({"erro": f"Falha ao enviar: {str(e)}", "composer_id": composer_id})
+
+    # Buscar a mensagem criada para confirmar
+    msgs = odoo.search(
+        "whatsapp.message",
+        filters=[["create_uid", "=", odoo.uid]],
+        fields=["id", "mobile_number", "state", "wa_template_id"],
+        limit=1,
+        order="id desc",
+    )
+
+    msg_info = msgs[0] if msgs else {}
+
+    return json.dumps({
+        "status": "enviado",
+        "template": template["name"],
+        "modelo": res_model,
+        "registro_id": registro_id,
+        "mensagem_id": msg_info.get("id"),
+        "telefone": msg_info.get("mobile_number"),
+        "estado": msg_info.get("state"),
+    }, default=serialize, ensure_ascii=False)
+
+
+@mcp.tool()
+def preview_whatsapp(
+    template_id: int,
+    registro_id: int,
+    telefone: str | None = None,
+    textos_livres: dict[str, str] | None = None,
+) -> str:
+    """Gera um preview da mensagem WhatsApp SEM enviar.
+
+    Util para verificar como a mensagem ficara antes de confirmar o envio.
+
+    Args:
+        template_id: ID do template de WhatsApp.
+        registro_id: ID do registro no modelo vinculado ao template.
+        telefone: Numero de telefone (override). None = usa o telefone do registro.
+        textos_livres: Valores para variaveis free_text.
+    """
+    odoo = get_odoo()
+
+    template = odoo.get("whatsapp.template", template_id,
+                        fields=["model", "name", "body"])
+    if not template:
+        return json.dumps({"erro": f"Template {template_id} nao encontrado"})
+
+    res_model = template["model"]
+
+    composer_vals = {
+        "wa_template_id": template_id,
+        "res_model": res_model,
+        "res_ids": str([registro_id]),
+    }
+    if telefone:
+        composer_vals["phone"] = telefone
+    if textos_livres:
+        for key, value in textos_livres.items():
+            composer_vals[f"free_text_{key}"] = value
+
+    context = {
+        "active_model": res_model,
+        "active_ids": [registro_id],
+    }
+
+    composer_id = odoo._call(
+        "whatsapp.composer", "create",
+        [composer_vals],
+        {"context": context},
+    )
+
+    composer = odoo.get("whatsapp.composer", composer_id,
+                        fields=["phone", "preview_whatsapp"])
+
+    # Limpar HTML do preview para texto legivel
+    preview_html = composer.get("preview_whatsapp", "")
+    # Extrair texto do HTML de forma simples
+    text = re.sub(r"<[^>]+>", "", preview_html)
+    text = re.sub(r"\s+", " ", text).strip()
+
+    # Deletar o composer (nao enviar)
+    odoo.delete("whatsapp.composer", composer_id)
+
+    return json.dumps({
+        "template": template["name"],
+        "telefone": composer.get("phone"),
+        "preview": text,
+    }, default=serialize, ensure_ascii=False)
 
 
 # ─── Entrypoint ──────────────────────────────────────────────────────────────
