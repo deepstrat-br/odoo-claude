@@ -67,7 +67,7 @@ def serialize(obj):
 # ─── Tools genericas (CRUD) ──────────────────────────────────────────────────
 
 
-@mcp.tool()
+@mcp.tool(name="buscar-registros")
 def buscar(
     modelo: str,
     filtros: list | None = None,
@@ -102,7 +102,7 @@ def buscar(
     return json.dumps(records, default=serialize, ensure_ascii=False)
 
 
-@mcp.tool()
+@mcp.tool(name="contar-registros")
 def contar(modelo: str, filtros: list | None = None) -> int:
     """Conta registros que atendem ao filtro, sem retornar os dados. Mais rapido que buscar().
 
@@ -117,7 +117,7 @@ def contar(modelo: str, filtros: list | None = None) -> int:
     return get_odoo().count(modelo, filters=filtros or [])
 
 
-@mcp.tool()
+@mcp.tool(name="ler-registro")
 def ler_registro(modelo: str, id: int, campos: list[str] | None = None) -> str:
     """Le um unico registro pelo ID. Mais eficiente que buscar() para registros individuais.
 
@@ -134,7 +134,7 @@ def ler_registro(modelo: str, id: int, campos: list[str] | None = None) -> str:
     return json.dumps(record, default=serialize, ensure_ascii=False)
 
 
-@mcp.tool()
+@mcp.tool(name="criar-registro")
 def criar_registro(modelo: str, valores: dict) -> str:
     """Cria um novo registro no Odoo. Para tarefas de projeto, prefira criar_tarefa() (mais ergonomico).
 
@@ -154,7 +154,7 @@ def criar_registro(modelo: str, valores: dict) -> str:
     return json.dumps({"id": record_id, "modelo": modelo, "status": "criado"})
 
 
-@mcp.tool()
+@mcp.tool(name="atualizar-registro")
 def atualizar_registro(modelo: str, id: int, valores: dict) -> str:
     """Atualiza campos de um registro existente no Odoo (update parcial).
 
@@ -170,7 +170,7 @@ def atualizar_registro(modelo: str, id: int, valores: dict) -> str:
     return json.dumps({"id": id, "modelo": modelo, "status": "atualizado"})
 
 
-@mcp.tool()
+@mcp.tool(name="deletar-registro")
 def deletar_registro(modelo: str, id: int) -> str:
     """DESTRUTIVO — Deleta permanentemente um registro do Odoo. Acao irreversivel.
 
@@ -188,7 +188,7 @@ def deletar_registro(modelo: str, id: int) -> str:
     return json.dumps({"id": id, "modelo": modelo, "status": "deletado"})
 
 
-@mcp.tool()
+@mcp.tool(name="listar-campos")
 def listar_campos(modelo: str) -> str:
     """Lista todos os campos de um modelo com nome tecnico, label em portugues e tipo.
 
@@ -211,7 +211,7 @@ def listar_campos(modelo: str) -> str:
 # ─── Tools especializadas ────────────────────────────────────────────────────
 
 
-@mcp.tool()
+@mcp.tool(name="listar-projetos")
 def listar_projetos() -> str:
     """Lista todos os projetos ativos com ID, nome, cliente, total de tarefas e prazo.
 
@@ -240,7 +240,7 @@ def listar_projetos() -> str:
     return json.dumps(rows, default=serialize, ensure_ascii=False)
 
 
-@mcp.tool()
+@mcp.tool(name="listar-tarefas")
 def listar_tarefas(
     projeto: str | int,
     etapa: str | None = None,
@@ -288,7 +288,7 @@ def listar_tarefas(
     return json.dumps(rows, default=serialize, ensure_ascii=False)
 
 
-@mcp.tool()
+@mcp.tool(name="criar-tarefa")
 def criar_tarefa(
     projeto: str | int,
     nome: str,
@@ -340,7 +340,7 @@ def criar_tarefa(
     return json.dumps({"id": task_id, "nome": nome, "projeto": str(projeto), "status": "criada"})
 
 
-@mcp.tool()
+@mcp.tool(name="mover-tarefa")
 def mover_tarefa(tarefa_id: int, etapa: str) -> str:
     """Move uma tarefa para outra etapa. Equivale a arrastar o card no Kanban.
 
@@ -356,7 +356,7 @@ def mover_tarefa(tarefa_id: int, etapa: str) -> str:
     return json.dumps({"id": tarefa_id, "etapa": etapa, "status": "movida"})
 
 
-@mcp.tool()
+@mcp.tool(name="resumo-financeiro")
 def resumo_financeiro() -> str:
     """Retorna painel financeiro: faturas a receber/vencidas, contas a pagar e pedidos de venda abertos.
 
@@ -418,7 +418,7 @@ def resumo_financeiro() -> str:
     })
 
 
-@mcp.tool()
+@mcp.tool(name="pipeline-CRM")
 def pipeline_crm(
     etapa: str | None = None,
     responsavel: str | None = None,
@@ -471,7 +471,7 @@ def pipeline_crm(
     return json.dumps(rows, default=serialize, ensure_ascii=False)
 
 
-@mcp.tool()
+@mcp.tool(name="lancar-horas")
 def lancar_horas(
     projeto: str | int,
     tarefa: str | int | None = None,
@@ -531,7 +531,7 @@ def lancar_horas(
     return json.dumps({"id": line_id, "horas": horas, "projeto": str(projeto), "status": "lancado"})
 
 
-@mcp.tool()
+@mcp.tool(name="resolver-nome")
 def resolver_nome(modelo: str, nome: str) -> str:
     """Resolve um nome textual para ID numerico no Odoo (busca exata, depois ilike).
 
@@ -567,7 +567,7 @@ _METODOLOGIA_RESUMO = (
 )
 
 
-@mcp.tool()
+@mcp.tool(name="leads-para-qualificar")
 def leads_pendentes_qualificacao(limite: int = 30) -> str:
     """Retorna leads novos nao qualificados (stage=Novos, priority=0, sem pesquisa na descricao).
 
@@ -632,7 +632,7 @@ def leads_pendentes_qualificacao(limite: int = 30) -> str:
     }, default=serialize, ensure_ascii=False)
 
 
-@mcp.tool()
+@mcp.tool(name="qualificar-lead")
 def qualificar_lead(
     lead_id: int,
     prioridade: int,
@@ -797,7 +797,7 @@ def qualificar_lead(
 # ─── WhatsApp ────────────────────────────────────────────────────────────────
 
 
-@mcp.tool()
+@mcp.tool(name="listar-templates-WhatsApp")
 def listar_templates_whatsapp(
     modelo: str | None = None,
     apenas_aprovados: bool = True,
@@ -873,7 +873,7 @@ def listar_templates_whatsapp(
     return json.dumps(rows, default=serialize, ensure_ascii=False)
 
 
-@mcp.tool()
+@mcp.tool(name="enviar-WhatsApp")
 def enviar_whatsapp(
     template_id: int,
     registro_id: int,
@@ -973,7 +973,7 @@ def enviar_whatsapp(
     }, default=serialize, ensure_ascii=False)
 
 
-@mcp.tool()
+@mcp.tool(name="preview-WhatsApp")
 def preview_whatsapp(
     template_id: int,
     registro_id: int,
@@ -1046,7 +1046,7 @@ def preview_whatsapp(
 # ─── Relatorios ──────────────────────────────────────────────────────────────
 
 
-@mcp.tool()
+@mcp.tool(name="gerar-DRE")
 def gerar_dre(
     ano: int,
     mapeamento_categorias: dict | None = None,
