@@ -38,10 +38,8 @@ if os.path.exists(_env_path):
                 _k, _v = _line.split("=", 1)
                 os.environ.setdefault(_k.strip(), _v.strip())
 
-ODOO_URL   = os.environ.get("ODOO_URL", "")
-ODOO_DB    = os.environ.get("ODOO_DB", "")
-ODOO_LOGIN = os.environ.get("ODOO_LOGIN", "")
-ODOO_KEY   = os.environ.get("ODOO_KEY", "")
+ODOO_URL = os.environ.get("ODOO_URL", "")
+ODOO_DB  = os.environ.get("ODOO_DB", "")
 
 _BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
@@ -59,26 +57,10 @@ def load_client_config(slug=None):
     Returns:
         Dict com chaves: slug, nome, moeda, odoo, activity_types, whatsapp, crm.
     """
-    slug = slug or os.environ.get("ODOO_CLIENT", "")
-
-    # Config padrao (fallback para .env puro)
-    default = {
-        "slug": "",
-        "nome": "",
-        "moeda": "",
-        "odoo": {
-            "url": ODOO_URL,
-            "db": ODOO_DB,
-            "login": ODOO_LOGIN,
-            "key": ODOO_KEY,
-        },
-        "activity_types": {},
-        "whatsapp": {},
-        "crm": {},
-    }
-
     if not slug:
-        return default
+        raise ValueError(
+            "Slug do cliente obrigatorio. Passe o slug explicitamente ou use trocar_cliente() no MCP."
+        )
 
     yaml_path = os.path.join(_BASE_DIR, "clients", f"{slug}.yaml")
     if not os.path.exists(yaml_path):
@@ -95,16 +77,19 @@ def load_client_config(slug=None):
         data = yaml.safe_load(f) or {}
 
     odoo_cfg = data.get("odoo", {})
+    # Prioridade: YAML > {SLUG}_ODOO_* (env)
+    prefix = slug.upper().replace("-", "_")
     config = {
         "slug": data.get("slug", slug),
         "nome": data.get("nome", slug),
         "moeda": data.get("moeda", ""),
         "odoo": {
-            "url": odoo_cfg.get("url") or ODOO_URL,
-            "db": odoo_cfg.get("db") or ODOO_DB,
-            "login": odoo_cfg.get("login") or ODOO_LOGIN,
-            "key": odoo_cfg.get("key") or ODOO_KEY,
+            "url": odoo_cfg.get("url") or os.environ.get(f"{prefix}_ODOO_URL") or ODOO_URL,
+            "db": odoo_cfg.get("db") or os.environ.get(f"{prefix}_ODOO_DB") or ODOO_DB,
+            "login": odoo_cfg.get("login") or os.environ.get(f"{prefix}_ODOO_LOGIN", ""),
+            "key": odoo_cfg.get("key") or os.environ.get(f"{prefix}_ODOO_KEY", ""),
         },
+        "contexto": data.get("contexto", {}),
         "activity_types": data.get("activity_types", {}),
         "whatsapp": data.get("whatsapp", {}),
         "crm": data.get("crm", {}),
@@ -126,10 +111,12 @@ class OdooClient:
     """
 
     def __init__(self, url=None, db=None, login=None, key=None):
-        url = url or ODOO_URL
-        db = db or ODOO_DB
-        login = login or ODOO_LOGIN
-        key = key or ODOO_KEY
+        if not any([url, db, login, key]):
+            cfg = load_client_config()
+            url, db, login, key = (cfg["odoo"][k] for k in ("url", "db", "login", "key"))
+        else:
+            url = url or ODOO_URL
+            db = db or ODOO_DB
 
         if not all([url, db, login, key]):
             raise ConnectionError(
@@ -235,7 +222,7 @@ class Resolver:
         r.stage("Backlog")                          # project.task.type -> int
         r.milestone(project_id, "Marco 1")          # project.milestone -> int
         r.tags(["CRM", "Vendas"])                   # project.tags -> [(6, 0, [ids])]
-        r.users(["user@deepstrat.com.br"])          # res.users -> [int]
+        r.users(["user@empresa.com"])               # res.users -> [int]
         r.partner("Nome do Cliente")                # res.partner -> int
         r.product("Service on Timesheets")          # product.product -> int
         r.uom("Hours")                              # uom.uom -> int
@@ -542,7 +529,7 @@ HELP = """
 Uso: python odoo.py [--client <slug>] <comando> [args]
 
 Opcoes:
-  --client <slug>   Carrega config de clients/<slug>.yaml (ou use ODOO_CLIENT env)
+  --client <slug>   Carrega config de clients/<slug>.yaml (obrigatorio)
 
 Comandos:
   projetos                          Lista projetos ativos

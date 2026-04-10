@@ -25,8 +25,8 @@ from datetime import date, datetime
 from mcp.server.fastmcp import FastMCP
 from odoo import OdooClient, Resolver, load_client_config
 
-# Carregar config do cliente (ODOO_CLIENT env ou fallback .env)
-_config = load_client_config()
+# Config inicializada como None — requer trocar_cliente() antes de usar
+_config = None
 
 mcp = FastMCP(
     "MCP Server for Odoo",
@@ -55,6 +55,8 @@ _resolver = None
 
 
 def get_config():
+    if _config is None:
+        raise ValueError("Nenhum cliente ativo. Use trocar_cliente(slug) primeiro.")
     return _config
 
 
@@ -68,7 +70,7 @@ def _reset_connection():
 def get_odoo():
     global _odoo
     if _odoo is None:
-        c = _config["odoo"]
+        c = get_config()["odoo"]
         _odoo = OdooClient(url=c["url"], db=c["db"], login=c["login"], key=c["key"])
     return _odoo
 
@@ -106,17 +108,21 @@ def listar_clientes() -> str:
                 slug = fname.rsplit(".", 1)[0]
                 try:
                     cfg = load_client_config(slug)
+                    ctx = cfg.get("contexto", {})
                     clientes.append({
                         "slug": cfg["slug"],
                         "nome": cfg["nome"],
                         "moeda": cfg["moeda"],
                         "url": cfg["odoo"]["url"],
+                        "descricao": ctx.get("descricao", ""),
+                        "segmento": ctx.get("segmento", ""),
+                        "modulos_ativos": ctx.get("modulos_ativos", []),
                     })
                 except Exception:
                     clientes.append({"slug": slug, "erro": "Falha ao carregar config"})
 
     return json.dumps({
-        "cliente_ativo": _config.get("slug") or None,
+        "cliente_ativo": _config.get("slug") if _config else None,
         "clientes": clientes,
     }, ensure_ascii=False)
 
@@ -410,7 +416,7 @@ def criar_tarefa(
         nome: Titulo da tarefa.
         horas: Horas planejadas em allocated_hours (ex: 2.5 = 2h30min). Default 0.
         etapa: Nome da etapa (ex: 'Backlog', 'A fazer', 'Em andamento'). None = etapa padrao do projeto.
-        responsaveis: Lista de emails ou nomes (ex: ['vagner@deepstrat.com.br']). None = usuario logado.
+        responsaveis: Lista de emails ou nomes (ex: ['usuario@empresa.com']). None = usuario logado.
         prazo: Data limite no formato YYYY-MM-DD.
         descricao: Descricao da tarefa (HTML aceito ou texto simples).
         tags: Lista de nomes de tags existentes (ex: ['CRM', 'Vendas']).

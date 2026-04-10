@@ -10,11 +10,20 @@ slug: deepstrat
 nome: Deepstrat
 moeda: BRL
 
+contexto:
+  descricao: "Consultoria especializada em implementacao e suporte de ERP Odoo no Brasil"
+  segmento: "Tecnologia / Consultoria"
+  modulos_ativos:
+    - Projetos
+    - Timesheets
+    - CRM
+    - Faturamento
+    - Compras
+    - WhatsApp
+
 odoo:
   url: https://deepstrat.odoo.com
   db: deepstrat
-  login: ""        # ou defina ODOO_LOGIN no ambiente
-  key: ""          # ou defina ODOO_KEY no ambiente
 
 # IDs de tipos de atividade (variam por instancia Odoo)
 # Para descobrir os seus: python odoo.py busca mail.activity.type "id,name"
