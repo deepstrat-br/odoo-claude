@@ -2,7 +2,8 @@
 MCP Server for Odoo — Multi-client
 
 Expoe o Odoo ERP via XML-RPC como ferramentas MCP.
-Cliente ativo definido pela variavel de ambiente ODOO_CLIENT (slug do YAML em clients/).
+Suporta multiplos clientes via YAML em clients/. Use listar_clientes() para ver
+os disponiveis e trocar_cliente(slug) para alternar em runtime.
 
 Tools genericas (CRUD): buscar, contar, ler_registro, criar_registro,
     atualizar_registro, deletar_registro, listar_campos.
@@ -10,12 +11,14 @@ Tools especializadas: listar_projetos, listar_tarefas, criar_tarefa, mover_taref
     lancar_horas, resumo_financeiro, pipeline_crm, resolver_nome.
 Tools de CRM/leads: leads_pendentes_qualificacao, qualificar_lead.
 Tools de WhatsApp: listar_templates_whatsapp, preview_whatsapp, enviar_whatsapp.
+Tools de cliente: listar_clientes, trocar_cliente.
 
 MOEDA: Cada documento tem sua propria moeda (currency_id). As tools financeiras
 retornam a moeda real de cada registro — nunca assuma uma moeda especifica.
 """
 
 import json
+import os
 import re
 from collections import defaultdict
 from datetime import date, datetime
@@ -25,12 +28,13 @@ from odoo import OdooClient, Resolver, load_client_config
 # Carregar config do cliente (ODOO_CLIENT env ou fallback .env)
 _config = load_client_config()
 
-_client_name = _config["nome"] or "Odoo"
-
 mcp = FastMCP(
-    f"MCP Server for Odoo - {_client_name}",
+    "MCP Server for Odoo",
     instructions=(
-        f"Servidor MCP para o Odoo ERP de {_client_name}. "
+        "Servidor MCP para o Odoo ERP com suporte a multiplos clientes. "
+        "Use listar_clientes() para ver os clientes disponiveis e "
+        "trocar_cliente(slug) para alternar entre eles. "
+        "Quando o usuario mencionar um cliente especifico, troque para ele antes de executar outras tools. "
         "Permite buscar, criar, atualizar e deletar registros, "
         "alem de operacoes especializadas para projetos, tarefas, CRM, financeiro e WhatsApp. "
         "IMPORTANTE — MOEDA: Cada documento (fatura, pedido, oportunidade) tem sua propria moeda "
@@ -42,13 +46,23 @@ mcp = FastMCP(
     ),
 )
 
-# Conexao lazy — inicializa apenas no primeiro uso
+# Diretorio de configs de clientes
+_CLIENTS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "clients")
+
+# Conexao lazy — inicializa apenas no primeiro uso, resetada ao trocar cliente
 _odoo = None
 _resolver = None
 
 
 def get_config():
     return _config
+
+
+def _reset_connection():
+    """Reseta conexao lazy para forcar reconexao com novo cliente."""
+    global _odoo, _resolver
+    _odoo = None
+    _resolver = None
 
 
 def get_odoo():
@@ -71,6 +85,84 @@ def serialize(obj):
     if isinstance(obj, (date, datetime)):
         return obj.isoformat()
     return str(obj)
+
+
+# ─── Tools de cliente ────────────────────────────────────────────────────────
+
+
+@mcp.tool()
+def listar_clientes() -> str:
+    """Lista os clientes disponiveis (arquivos YAML em clients/).
+
+    Use para descobrir quais clientes podem ser acessados via trocar_cliente(slug).
+    Mostra tambem qual cliente esta ativo no momento.
+
+    Returns JSON {cliente_ativo, clientes: [{slug, nome, moeda, url}]}.
+    """
+    clientes = []
+    if os.path.isdir(_CLIENTS_DIR):
+        for fname in sorted(os.listdir(_CLIENTS_DIR)):
+            if fname.endswith(".yaml") or fname.endswith(".yml"):
+                slug = fname.rsplit(".", 1)[0]
+                try:
+                    cfg = load_client_config(slug)
+                    clientes.append({
+                        "slug": cfg["slug"],
+                        "nome": cfg["nome"],
+                        "moeda": cfg["moeda"],
+                        "url": cfg["odoo"]["url"],
+                    })
+                except Exception:
+                    clientes.append({"slug": slug, "erro": "Falha ao carregar config"})
+
+    return json.dumps({
+        "cliente_ativo": _config.get("slug") or None,
+        "clientes": clientes,
+    }, ensure_ascii=False)
+
+
+@mcp.tool()
+def trocar_cliente(slug: str) -> str:
+    """Troca o cliente ativo do servidor MCP.
+
+    Recarrega a configuracao do YAML e reconecta ao Odoo do cliente selecionado.
+    Todas as tools passam a operar no banco de dados do novo cliente.
+
+    Use listar_clientes() para ver os slugs disponiveis.
+
+    Args:
+        slug: Identificador do cliente (ex: 'deepstrat'). Corresponde ao arquivo clients/<slug>.yaml.
+
+    Returns JSON {status, cliente, nome, url}.
+    """
+    global _config
+
+    try:
+        new_config = load_client_config(slug)
+    except FileNotFoundError:
+        return json.dumps({
+            "erro": f"Cliente '{slug}' nao encontrado. Use listar_clientes() para ver os disponiveis."
+        }, ensure_ascii=False)
+
+    _config = new_config
+    _reset_connection()
+
+    # Testar conexao
+    try:
+        odoo = get_odoo()
+        return json.dumps({
+            "status": "conectado",
+            "cliente": _config["slug"],
+            "nome": _config["nome"],
+            "url": _config["odoo"]["url"],
+            "uid": odoo.uid,
+        }, ensure_ascii=False)
+    except Exception as e:
+        return json.dumps({
+            "status": "erro_conexao",
+            "cliente": _config["slug"],
+            "erro": str(e),
+        }, ensure_ascii=False)
 
 
 # ─── Tools genericas (CRUD) ──────────────────────────────────────────────────
