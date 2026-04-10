@@ -1,7 +1,8 @@
 """
-MCP Server for Odoo — Deepstrat
+MCP Server for Odoo — Multi-client
 
-Expoe o Odoo ERP (deepstrat.odoo.com) via XML-RPC como ferramentas MCP.
+Expoe o Odoo ERP via XML-RPC como ferramentas MCP.
+Cliente ativo definido pela variavel de ambiente ODOO_CLIENT (slug do YAML em clients/).
 
 Tools genericas (CRUD): buscar, contar, ler_registro, criar_registro,
     atualizar_registro, deletar_registro, listar_campos.
@@ -10,27 +11,31 @@ Tools especializadas: listar_projetos, listar_tarefas, criar_tarefa, mover_taref
 Tools de CRM/leads: leads_pendentes_qualificacao, qualificar_lead.
 Tools de WhatsApp: listar_templates_whatsapp, preview_whatsapp, enviar_whatsapp.
 
-MOEDA PADRAO: Todos os valores monetarios estao em BRL (Real brasileiro).
-Nunca assuma USD, EUR ou outra moeda — o padrao e sempre R$.
+MOEDA: Cada documento tem sua propria moeda (currency_id). As tools financeiras
+retornam a moeda real de cada registro — nunca assuma uma moeda especifica.
 """
 
 import json
 import re
+from collections import defaultdict
 from datetime import date, datetime
 from mcp.server.fastmcp import FastMCP
-from odoo import OdooClient, Resolver
+from odoo import OdooClient, Resolver, load_client_config
+
+# Carregar config do cliente (ODOO_CLIENT env ou fallback .env)
+_config = load_client_config()
+
+_client_name = _config["nome"] or "Odoo"
 
 mcp = FastMCP(
-    "MCP Server for Odoo - by Deepstrat",
+    f"MCP Server for Odoo - {_client_name}",
     instructions=(
-        "Servidor MCP para o Odoo ERP da Deepstrat (deepstrat.odoo.com). "
+        f"Servidor MCP para o Odoo ERP de {_client_name}. "
         "Permite buscar, criar, atualizar e deletar registros, "
         "alem de operacoes especializadas para projetos, tarefas, CRM, financeiro e WhatsApp. "
-        "IMPORTANTE — MOEDA: A empresa Deepstrat opera no Brasil. "
-        "A moeda base do Odoo é BRL (Real brasileiro, simbolo R$). "
-        "Todos os valores monetarios retornados estao em BRL, salvo quando "
-        "o campo 'moeda' ou 'currency_id' indicar explicitamente outra moeda. "
-        "NUNCA assuma USD, EUR ou outra moeda — o padrao é SEMPRE R$ (BRL). "
+        "IMPORTANTE — MOEDA: Cada documento (fatura, pedido, oportunidade) tem sua propria moeda "
+        "no campo currency_id. As tools financeiras sempre retornam a moeda real de cada registro. "
+        "NUNCA assuma uma moeda especifica — verifique o campo 'moeda' retornado em cada registro. "
         "QUALIFICACAO DE LEADS: Use leads_pendentes_qualificacao() para obter leads novos "
         "e a metodologia de qualificacao. Pesquise cada empresa online e use qualificar_lead() "
         "para aplicar. Para leads com prioridade 3, crie atividade de ligacao."
@@ -42,10 +47,15 @@ _odoo = None
 _resolver = None
 
 
+def get_config():
+    return _config
+
+
 def get_odoo():
     global _odoo
     if _odoo is None:
-        _odoo = OdooClient()
+        c = _config["odoo"]
+        _odoo = OdooClient(url=c["url"], db=c["db"], login=c["login"], key=c["key"])
     return _odoo
 
 
@@ -359,10 +369,10 @@ def mover_tarefa(tarefa_id: int, etapa: str) -> str:
 def resumo_financeiro() -> str:
     """Retorna painel financeiro: faturas a receber/vencidas, contas a pagar e pedidos de venda abertos.
 
-    Todos os valores monetarios estao em BRL (Real brasileiro).
+    Valores agrupados por moeda real de cada documento (currency_id).
 
-    Returns JSON {data, moeda, faturas_em_aberto, faturas_vencidas, total_a_receber_BRL,
-                  pedidos_venda_abertos, contas_a_pagar, total_a_pagar_BRL}.
+    Returns JSON {data, faturas_em_aberto, faturas_vencidas, total_a_receber: [{moeda, valor}],
+                  pedidos_venda_abertos, contas_a_pagar, total_a_pagar: [{moeda, valor}]}.
     """
     odoo = get_odoo()
     hoje = str(date.today())
@@ -390,30 +400,41 @@ def resumo_financeiro() -> str:
         ["state", "=", "posted"],
     ])
 
-    # Totais monetarios (a receber e a pagar)
+    # Totais monetarios agrupados por moeda
     faturas_rec = odoo.search("account.move", [
         ["move_type", "=", "out_invoice"],
         ["payment_state", "!=", "paid"],
         ["state", "=", "posted"],
     ], fields=["amount_residual", "currency_id"], limit=200)
-    total_receber = sum(f["amount_residual"] for f in faturas_rec)
+
+    receber_por_moeda = defaultdict(float)
+    for f in faturas_rec:
+        moeda = f["currency_id"][1] if f.get("currency_id") else "N/A"
+        receber_por_moeda[moeda] += f["amount_residual"]
 
     faturas_pag = odoo.search("account.move", [
         ["move_type", "=", "in_invoice"],
         ["payment_state", "!=", "paid"],
         ["state", "=", "posted"],
     ], fields=["amount_residual", "currency_id"], limit=200)
-    total_pagar = sum(f["amount_residual"] for f in faturas_pag)
+
+    pagar_por_moeda = defaultdict(float)
+    for f in faturas_pag:
+        moeda = f["currency_id"][1] if f.get("currency_id") else "N/A"
+        pagar_por_moeda[moeda] += f["amount_residual"]
 
     return json.dumps({
         "data": hoje,
-        "moeda": "BRL",
         "faturas_em_aberto": faturas_abertas,
         "faturas_vencidas": faturas_vencidas,
-        "total_a_receber_BRL": round(total_receber, 2),
+        "total_a_receber": [
+            {"moeda": m, "valor": round(v, 2)} for m, v in receber_por_moeda.items()
+        ],
         "pedidos_venda_abertos": vendas_abertas,
         "contas_a_pagar": contas_pagar,
-        "total_a_pagar_BRL": round(total_pagar, 2),
+        "total_a_pagar": [
+            {"moeda": m, "valor": round(v, 2)} for m, v in pagar_por_moeda.items()
+        ],
     })
 
 
@@ -426,7 +447,7 @@ def pipeline_crm(
     """Lista oportunidades do CRM com receita esperada, probabilidade e etapa.
 
     Use leads_pendentes_qualificacao() para ver leads novos nao qualificados.
-    Valores monetarios em BRL.
+    O campo 'moeda' indica a moeda real de cada oportunidade (currency_id da empresa).
 
     Returns JSON array [{id, nome, cliente, etapa, receita_esperada, moeda,
                         probabilidade, prazo, responsavel}, ...] ordenado por receita desc.
@@ -549,8 +570,8 @@ def resolver_nome(modelo: str, nome: str) -> str:
 
 # ─── Qualificacao de Leads ───────────────────────────────────────────────────
 
-# Metodologia completa em docs/qualificacao-leads.md
-_METODOLOGIA_RESUMO = (
+# Metodologia: carregada da config do cliente, com fallback padrao
+_METODOLOGIA_FALLBACK = (
     "METODOLOGIA DE QUALIFICACAO:\n"
     "1. Para cada lead, pesquise a empresa online (Google, Instagram, site, CNPJ).\n"
     "2. Analise sinais: site proprio (+), email corporativo (+), presenca digital (+), "
@@ -564,6 +585,10 @@ _METODOLOGIA_RESUMO = (
     "6. Titulo padrao: 'Lead Odoo: Nome do Contato — Empresa'.\n"
     "Detalhes completos: docs/qualificacao-leads.md"
 )
+
+
+def _get_metodologia():
+    return (_config.get("crm", {}).get("metodologia") or "").strip() or _METODOLOGIA_FALLBACK
 
 
 @mcp.tool()
@@ -586,7 +611,7 @@ def leads_pendentes_qualificacao(limite: int = 30) -> str:
         filters=[
             ["type", "=", "lead"],
             ["priority", "=", "0"],
-            ["stage_id.name", "=", "Novos"],
+            ["stage_id.name", "=", _config.get("crm", {}).get("stage_novos", "Novos")],
         ],
         fields=[
             "id", "name", "contact_name", "partner_name",
@@ -627,7 +652,7 @@ def leads_pendentes_qualificacao(limite: int = 30) -> str:
     return json.dumps({
         "total_pendentes": len(pendentes),
         "leads": pendentes,
-        "metodologia": _METODOLOGIA_RESUMO,
+        "metodologia": _get_metodologia(),
     }, default=serialize, ensure_ascii=False)
 
 
@@ -645,8 +670,8 @@ def qualificar_lead(
 ) -> str:
     """Aplica qualificacao em um lead: atualiza prioridade, nomes, pesquisa e executa acoes automaticas.
 
-    Acoes automaticas por nivel de prioridade:
-    - 3 (alto): envia WhatsApp template 17 (Abordagem Leads) + cria atividade Call para hoje.
+    Acoes automaticas por nivel de prioridade (IDs configuraveis no YAML do cliente):
+    - 3 (alto): envia WhatsApp de abordagem (template configurado) + cria atividade Call para hoje.
     - 2 (medio): cria atividade To Do de revisao para hoje.
     - 0-1: apenas atualiza dados, sem acao adicional.
 
@@ -726,12 +751,13 @@ def qualificar_lead(
 
     # === PRIORIDADE 3: WhatsApp automatico + atividade Call ===
     if prioridade >= 3:
-        # 1) Enviar WhatsApp de abordagem (template 17 = "Abordagem Leads enviados pela Odoo")
+        # 1) Enviar WhatsApp de abordagem (template configurado no YAML do cliente)
+        wa_template_id = _config.get("whatsapp", {}).get("template_abordagem_leads")
         phone = lead.get("phone") or ""
-        if phone and len(phone.replace(" ", "").replace("-", "").replace("+", "")) >= 12:
+        if wa_template_id and phone and len(phone.replace(" ", "").replace("-", "").replace("+", "")) >= 12:
             try:
                 composer_vals = {
-                    "wa_template_id": 17,
+                    "wa_template_id": wa_template_id,
                     "res_model": "crm.lead",
                     "res_ids": str([lead_id]),
                 }
@@ -748,14 +774,18 @@ def qualificar_lead(
             except Exception as e:
                 resultado["whatsapp_erro"] = str(e)
         else:
-            resultado["whatsapp"] = f"Nao enviado — telefone invalido ou incompleto: {phone}"
+            if not wa_template_id:
+                resultado["whatsapp"] = "Nao enviado — template nao configurado no YAML do cliente"
+            else:
+                resultado["whatsapp"] = f"Nao enviado — telefone invalido ou incompleto: {phone}"
 
         # 2) Criar atividade Call
+        call_type_id = _config.get("activity_types", {}).get("call", 2)
         act_vals = {
             "res_model_id": model_id,
             "res_model": "crm.lead",
             "res_id": lead_id,
-            "activity_type_id": 2,  # Call
+            "activity_type_id": call_type_id,
             "summary": f"Ligar para {nome_display} ({emp_display})",
             "date_deadline": str(date.today()),
             "user_id": odoo.uid,
@@ -776,11 +806,12 @@ def qualificar_lead(
             f"<p><b>Decisao necessaria:</b> Avaliar se vale abordar via WhatsApp/ligacao "
             f"ou arquivar o lead.</p>"
         )
+        todo_type_id = _config.get("activity_types", {}).get("todo", 4)
         act_vals = {
             "res_model_id": model_id,
             "res_model": "crm.lead",
             "res_id": lead_id,
-            "activity_type_id": 4,  # To Do
+            "activity_type_id": todo_type_id,
             "summary": f"Revisar lead: {nome_display} ({emp_display})",
             "date_deadline": str(date.today()),
             "user_id": odoo.uid,
