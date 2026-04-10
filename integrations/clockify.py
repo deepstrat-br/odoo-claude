@@ -1,5 +1,5 @@
 """
-Clockify Helper — Deepstrat
+Clockify Helper
 Uso: python integrations/clockify.py <comando> [args]
 
 Comandos:
@@ -218,8 +218,8 @@ def cmd_comparar(args):
 
     # --- Odoo ---
     import xmlrpc.client
-    ODOO_URL = os.environ.get("ODOO_URL", "https://deepstrat.odoo.com")
-    ODOO_DB = os.environ.get("ODOO_DB", "deepstrat")
+    ODOO_URL = os.environ.get("ODOO_URL")
+    ODOO_DB = os.environ.get("ODOO_DB")
     ODOO_LOGIN = os.environ.get("ODOO_LOGIN", "")
     ODOO_KEY = os.environ.get("ODOO_KEY", "")
 

@@ -2,22 +2,25 @@
 Odoo Helper — XML-RPC client for Claude automation
 
 Biblioteca central para acesso ao Odoo via XML-RPC.
-Exporta OdooClient (operacoes CRUD) e Resolver (resolucao de nomes para IDs com cache).
+Exporta OdooClient (operacoes CRUD), Resolver (resolucao de nomes para IDs com cache)
+e load_client_config (configuracao multi-cliente via YAML).
 
 Uso como biblioteca:
-    from odoo import OdooClient, Resolver
-    odoo = OdooClient()
+    from odoo import OdooClient, Resolver, load_client_config
+    config = load_client_config("deepstrat")
+    odoo = OdooClient(**config["odoo"])
     r = Resolver(odoo)
 
 Uso como CLI:
     python odoo.py projetos
+    python odoo.py --client deepstrat projetos
     python odoo.py tarefas <id_ou_nome>
     python odoo.py busca <modelo> <campos> [filtro] [limite]
     python odoo.py criar-tarefa <proj_id> "Nome" [horas]
     python odoo.py campos <modelo>
     python odoo.py financeiro
 
-Credenciais carregadas automaticamente do arquivo .env no mesmo diretorio.
+Credenciais: YAML do cliente (clients/<slug>.yaml) > variaveis de ambiente > .env.
 """
 
 import xmlrpc.client
@@ -35,36 +38,103 @@ if os.path.exists(_env_path):
                 _k, _v = _line.split("=", 1)
                 os.environ.setdefault(_k.strip(), _v.strip())
 
-ODOO_URL   = os.environ.get("ODOO_URL", "")
-ODOO_DB    = os.environ.get("ODOO_DB", "")
-ODOO_LOGIN = os.environ.get("ODOO_LOGIN", "")
-ODOO_KEY   = os.environ.get("ODOO_KEY", "")
+ODOO_URL = os.environ.get("ODOO_URL", "")
+ODOO_DB  = os.environ.get("ODOO_DB", "")
+
+_BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+
+def load_client_config(slug=None):
+    """Carrega configuracao do cliente a partir de clients/<slug>.yaml.
+
+    Prioridade para slug: argumento > env ODOO_CLIENT > None.
+    Se nenhum slug definido ou arquivo nao encontrado, retorna config
+    padrao usando variaveis de ambiente (compatibilidade retroativa).
+
+    Credenciais no YAML sao opcionais — valores vazios fazem fallback
+    para as variaveis de ambiente ODOO_URL, ODOO_DB, ODOO_LOGIN, ODOO_KEY.
+
+    Returns:
+        Dict com chaves: slug, nome, moeda, odoo, activity_types, whatsapp, crm.
+    """
+    if not slug:
+        raise ValueError(
+            "Slug do cliente obrigatorio. Passe o slug explicitamente ou use trocar_cliente() no MCP."
+        )
+
+    yaml_path = os.path.join(_BASE_DIR, "clients", f"{slug}.yaml")
+    if not os.path.exists(yaml_path):
+        raise FileNotFoundError(
+            f"Config do cliente nao encontrada: {yaml_path}"
+        )
+
+    try:
+        import yaml
+    except ImportError:
+        raise ImportError("Dependencia ausente: pip install pyyaml")
+
+    with open(yaml_path) as f:
+        data = yaml.safe_load(f) or {}
+
+    odoo_cfg = data.get("odoo", {})
+    # Prioridade: YAML > {SLUG}_ODOO_* (env)
+    prefix = slug.upper().replace("-", "_")
+    config = {
+        "slug": data.get("slug", slug),
+        "nome": data.get("nome", slug),
+        "moeda": data.get("moeda", ""),
+        "odoo": {
+            "url": odoo_cfg.get("url") or os.environ.get(f"{prefix}_ODOO_URL") or ODOO_URL,
+            "db": odoo_cfg.get("db") or os.environ.get(f"{prefix}_ODOO_DB") or ODOO_DB,
+            "login": odoo_cfg.get("login") or os.environ.get(f"{prefix}_ODOO_LOGIN", ""),
+            "key": odoo_cfg.get("key") or os.environ.get(f"{prefix}_ODOO_KEY", ""),
+        },
+        "contexto": data.get("contexto", {}),
+        "activity_types": data.get("activity_types", {}),
+        "whatsapp": data.get("whatsapp", {}),
+        "crm": data.get("crm", {}),
+    }
+    return config
 
 
 class OdooClient:
-    """Cliente XML-RPC para o Odoo ERP da Deepstrat.
+    """Cliente XML-RPC para o Odoo ERP.
 
     Encapsula as chamadas execute_kw da API XML-RPC do Odoo com metodos
     de alto nivel para search_read, read, create, write e unlink.
 
-    Autentica automaticamente ao instanciar usando as variaveis de ambiente
+    Aceita credenciais explicitas ou faz fallback para variaveis de ambiente
     ODOO_URL, ODOO_DB, ODOO_LOGIN e ODOO_KEY (carregadas do .env).
 
     Attributes:
         uid: ID do usuario autenticado (int). Disponivel apos __init__.
     """
 
-    def __init__(self):
-        common = xmlrpc.client.ServerProxy(f"{ODOO_URL}/xmlrpc/2/common")
-        self.uid = common.authenticate(ODOO_DB, ODOO_LOGIN, ODOO_KEY, {})
+    def __init__(self, url=None, db=None, login=None, key=None):
+        if not any([url, db, login, key]):
+            cfg = load_client_config()
+            url, db, login, key = (cfg["odoo"][k] for k in ("url", "db", "login", "key"))
+        else:
+            url = url or ODOO_URL
+            db = db or ODOO_DB
+
+        if not all([url, db, login, key]):
+            raise ConnectionError(
+                "Credenciais incompletas. Configure via clients/<slug>.yaml ou .env."
+            )
+
+        self._db = db
+        self._key = key
+        common = xmlrpc.client.ServerProxy(f"{url}/xmlrpc/2/common")
+        self.uid = common.authenticate(db, login, key, {})
         if not self.uid:
             raise ConnectionError("Falha na autenticacao. Verifique as credenciais.")
-        self._models = xmlrpc.client.ServerProxy(f"{ODOO_URL}/xmlrpc/2/object")
+        self._models = xmlrpc.client.ServerProxy(f"{url}/xmlrpc/2/object")
 
     def _call(self, model, method, args, kwargs=None):
         """Chama execute_kw diretamente. Use para metodos nao cobertos pela API publica."""
         return self._models.execute_kw(
-            ODOO_DB, self.uid, ODOO_KEY, model, method, args, kwargs or {}
+            self._db, self.uid, self._key, model, method, args, kwargs or {}
         )
 
     def search(self, model, filters=None, fields=None, limit=80, order=None):
@@ -152,7 +222,7 @@ class Resolver:
         r.stage("Backlog")                          # project.task.type -> int
         r.milestone(project_id, "Marco 1")          # project.milestone -> int
         r.tags(["CRM", "Vendas"])                   # project.tags -> [(6, 0, [ids])]
-        r.users(["user@deepstrat.com.br"])          # res.users -> [int]
+        r.users(["user@empresa.com"])               # res.users -> [int]
         r.partner("Nome do Cliente")                # res.partner -> int
         r.product("Service on Timesheets")          # product.product -> int
         r.uom("Hours")                              # uom.uom -> int
@@ -456,7 +526,10 @@ COMMANDS = {
 }
 
 HELP = """
-Uso: python odoo.py <comando> [args]
+Uso: python odoo.py [--client <slug>] <comando> [args]
+
+Opcoes:
+  --client <slug>   Carrega config de clients/<slug>.yaml (obrigatorio)
 
 Comandos:
   projetos                          Lista projetos ativos
@@ -468,19 +541,29 @@ Comandos:
 """
 
 if __name__ == "__main__":
-    if len(sys.argv) < 2 or sys.argv[1] in ("-h", "--help", "help"):
+    argv = sys.argv[1:]
+
+    # Extrair --client flag
+    client_slug = None
+    if len(argv) >= 2 and argv[0] == "--client":
+        client_slug = argv[1]
+        argv = argv[2:]
+
+    if not argv or argv[0] in ("-h", "--help", "help"):
         print(HELP)
         sys.exit(0)
 
-    cmd = sys.argv[1]
-    args = sys.argv[2:]
+    cmd = argv[0]
+    args = argv[1:]
 
     if cmd not in COMMANDS:
         print(f"Comando desconhecido: '{cmd}'\n{HELP}")
         sys.exit(1)
 
     try:
-        odoo = OdooClient()
+        config = load_client_config(client_slug)
+        c = config["odoo"]
+        odoo = OdooClient(url=c["url"], db=c["db"], login=c["login"], key=c["key"])
         COMMANDS[cmd](odoo, args)
     except ConnectionError as e:
         print(f"Erro de conexao: {e}")

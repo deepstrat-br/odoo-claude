@@ -1,8 +1,23 @@
-# Odoo ERP — Deepstrat
+# Odoo ERP — Multi-cliente
 
-Helper CLI + modulo Python para o Odoo da Deepstrat via XML-RPC.
+Helper CLI + modulo Python para o Odoo via XML-RPC, com suporte a multiplos clientes.
 
 ## Conexao
+
+### Configuracao por cliente (recomendado)
+
+Cada cliente tem um arquivo YAML em `clients/<slug>.yaml` com URL, DB, IDs de atividades,
+templates WhatsApp e config de CRM. Selecione o cliente ativo via:
+
+```bash
+export ODOO_CLIENT=deepstrat    # ou --client deepstrat no CLI
+```
+
+Credenciais (login/key) ficam no `.env` ou variaveis de ambiente — nunca no YAML commitado.
+
+### Fallback (sem YAML)
+
+Se `ODOO_CLIENT` nao estiver definido, usa diretamente as variaveis do `.env`:
 
 | Param | Origem |
 |---|---|
@@ -11,9 +26,7 @@ Helper CLI + modulo Python para o Odoo da Deepstrat via XML-RPC.
 | Login | `ODOO_LOGIN` no `.env` |
 | API Key | `ODOO_KEY` no `.env` |
 
-Credenciais carregadas automaticamente pelo `odoo.py`. Cada usuario configura seu proprio `.env`.
-
-**Moeda: BRL (R$).** A Deepstrat opera no Brasil. A moeda base do Odoo é BRL (Real brasileiro). Todos os valores monetarios retornados pelo MCP/CLI estao em BRL, salvo quando `currency_id` indicar outra moeda. Nunca assumir USD, EUR ou outra moeda.
+**Moeda:** Nunca assumir uma moeda especifica. Cada documento no Odoo (fatura, pedido, oportunidade) tem seu proprio `currency_id`. As tools financeiras sempre retornam a moeda real de cada registro.
 
 ---
 
@@ -26,9 +39,10 @@ Nunca criar um script para um caso especifico (ex: "criar PO do fulano"). Sempre
 Todo script que cria ou atualiza registros com campos `many2one`/`many2many` deve usar a classe `Resolver` de `odoo.py`. Ela resolve nomes para IDs com cache, evitando duplicacao de logica entre scripts.
 
 ```python
-from odoo import OdooClient, Resolver
+from odoo import OdooClient, Resolver, load_client_config
 
-odoo = OdooClient()
+config = load_client_config()  # usa ODOO_CLIENT env, ou load_client_config("slug")
+odoo = OdooClient(**config["odoo"])
 r = Resolver(odoo)
 
 r.project("Meu Projeto")              # project.project -> int
@@ -54,9 +68,11 @@ Para operacoes pontuais, Claude gera Python usando `OdooClient` diretamente, sem
 ## Estrutura do projeto
 
 ```
-odoo-deepstrat/
-├── odoo.py                          # cliente XML-RPC + Resolver (lib core)
+odoo-claude/
+├── odoo.py                          # cliente XML-RPC + Resolver + load_client_config (lib core)
 ├── mcp_server.py                    # servidor MCP (Model Context Protocol)
+├── clients/                         # configs de clientes (YAML, versionados)
+│   └── deepstrat.yaml              # config Deepstrat: IDs, templates, CRM
 ├── scripts/
 │   ├── project/
 │   │   └── import_tasks.py          # criacao em lote de tarefas via YAML
@@ -69,7 +85,8 @@ odoo-deepstrat/
 │   └── purchase/
 └── docs/
     ├── projetos-timesheets.md
-    └── clockify.md
+    ├── clockify.md
+    └── qualificacao-leads.md
 ```
 
 ---
@@ -77,7 +94,8 @@ odoo-deepstrat/
 ## CLI — odoo.py
 
 ```bash
-python odoo.py projetos
+python odoo.py projetos                                          # usa ODOO_CLIENT env
+python odoo.py --client deepstrat projetos                       # especifica cliente
 python odoo.py tarefas <id_ou_nome>
 python odoo.py financeiro
 python odoo.py busca res.partner "name,email,city" "customer_rank>0" 10
@@ -111,8 +129,10 @@ python integrations/clockify.py comparar-rti 2026-04-01 2026-04-30
 ## Modulo Python
 
 ```python
-from odoo import OdooClient
-odoo = OdooClient()
+from odoo import OdooClient, load_client_config
+
+config = load_client_config()  # usa ODOO_CLIENT env
+odoo = OdooClient(**config["odoo"])
 
 odoo.search('modelo', filters=[[...]], fields=['campo1', 'campo2'], limit=20)
 odoo.get('modelo', record_id, fields=[...])
@@ -122,6 +142,43 @@ odoo.update('modelo', record_id, {'campo': 'novo_valor'})
 odoo.delete('modelo', record_id)
 odoo.fields('modelo')
 ```
+
+---
+
+## Configuracao multi-cliente (`clients/`)
+
+Cada cliente tem um YAML em `clients/<slug>.yaml` com:
+
+```yaml
+slug: meu_cliente
+nome: Nome do Cliente
+moeda: BRL                    # moeda padrao (informativo)
+
+odoo:
+  url: https://instance.odoo.com
+  db: database_name
+  login: ""                   # fallback para ODOO_LOGIN env
+  key: ""                     # fallback para ODOO_KEY env
+
+activity_types:               # IDs variam por instancia Odoo
+  call: 2
+  todo: 4
+
+whatsapp:
+  template_abordagem_leads: 17  # null = desabilita envio automatico
+
+crm:
+  stage_novos: "Novos"
+  metodologia: |
+    Texto da metodologia de qualificacao...
+```
+
+**Para adicionar um novo cliente:** copiar `clients/deepstrat.yaml`, ajustar slug/nome/IDs, configurar credenciais no `.env`.
+
+**Selecionar cliente ativo:**
+- Env var: `ODOO_CLIENT=slug`
+- CLI: `python odoo.py --client slug <comando>`
+- Python: `load_client_config("slug")`
 
 ---
 

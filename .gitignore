@@ -1,5 +1,6 @@
 # Credenciais — NUNCA subir
 .env
+clients/
 
 # Python
 __pycache__/
