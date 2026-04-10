@@ -1049,16 +1049,17 @@ def preview_whatsapp(
 @mcp.tool()
 def gerar_dre(
     ano: int,
-    mapeamento_fornecedores: dict | None = None,
+    mapeamento_categorias: dict | None = None,
     output_path: str | None = None,
 ) -> str:
     """Gera DRE (Demonstracao do Resultado do Exercicio) em Excel para o ano especificado.
 
-    Busca faturas de venda (receita) e compra (despesas) no Odoo, categoriza fornecedores
-    e gera planilha .xlsx com 3 abas: DRE mensal com formulas, detalhamento de receitas
-    e detalhamento de despesas.
+    Busca faturas de venda (receita) e linhas de compra (despesas) no Odoo.
+    Categoriza cada linha de despesa pela conta analitica (prioritario) ou pela
+    conta do plano de contas contabil (fallback). Gera planilha .xlsx com 3 abas:
+    DRE mensal com formulas, detalhamento de receitas e detalhamento de despesas.
 
-    Categorias de despesa disponiveis para mapeamento_fornecedores:
+    Categorias de despesa disponíveis:
     - "Pessoal / Servicos Profissionais"
     - "Terceirizacao / Subcontratacao"
     - "Impostos e Taxas"
@@ -1066,22 +1067,25 @@ def gerar_dre(
 
     Args:
         ano: Ano fiscal (ex: 2025).
-        mapeamento_fornecedores: {categoria: ["Nome Fornecedor", ...]} para classificar despesas.
-                                 Nao obrigatorio — fornecedores nao listados vao para
-                                 "Software / SaaS / Infraestrutura".
+        mapeamento_categorias: {categoria: ["termo analitico ou contabil", ...]} para classificar.
+                               Prioridade: nome da conta analitica; fallback: nome da conta contabil.
+                               Nao obrigatorio — linhas nao mapeadas vao para
+                               "Software / SaaS / Infraestrutura".
+                               Exemplo: {"Pessoal / Servicos Profissionais": ["Pessoal", "RH"],
+                                         "Impostos e Taxas": ["SEFAZ", "ISS", "Simples"]}
         output_path: Caminho do arquivo .xlsx a gerar. Default: "reports/dre_{ano}.xlsx".
 
-    Returns: JSON com caminho do arquivo, resumo de receitas/despesas e total de faturas processadas.
+    Returns: JSON com caminho do arquivo, resumo financeiro e linhas processadas.
     """
     import os
     from reports.dre import (
-        gerar_excel_dre, categorizar_despesa, obs_from_states,
+        gerar_excel_dre, categorizar_por_conta, obs_from_states,
         CATEGORIAS_DESPESA, CATEGORIA_DEFAULT,
     )
 
     odoo = get_odoo()
     hoje = str(date.today())
-    mapeamento = mapeamento_fornecedores or {}
+    mapeamento = mapeamento_categorias or {}
 
     if output_path is None:
         output_path = os.path.join(
@@ -1092,7 +1096,6 @@ def gerar_dre(
     company = odoo.search("res.company", [], fields=["name", "currency_id"], limit=1)
     empresa = company[0]["name"] if company else "Empresa"
     moeda_raw = company[0]["currency_id"][1] if company and company[0].get("currency_id") else "BRL"
-    # Extrai codigo da moeda (ex: "BRL" de "BRL" ou "[BRL] Real")
     moeda = moeda_raw.split()[0].strip("[]") if moeda_raw else "BRL"
 
     campos_fatura = [
@@ -1132,20 +1135,72 @@ def gerar_dre(
         imposto[mes] += total - untaxed
         receita_states.add(v["state"])
 
-    # Agrega despesas por categoria e mes
+    # Busca linhas das faturas de compra para categorizar por conta analitica / contabil
+    compras_by_id = {c["id"]: c for c in compras}
+    compra_ids = list(compras_by_id.keys())
+
+    linhas_odoo = []
+    if compra_ids:
+        linhas_odoo = odoo.search("account.move.line", [
+            ["move_id", "in", compra_ids],
+            ["display_type", "not in", ["line_section", "line_note"]],
+            ["tax_line_id", "=", False],
+            ["price_subtotal", "!=", 0],
+        ], fields=[
+            "move_id", "name", "account_id", "analytic_distribution", "price_subtotal",
+        ], limit=2000)
+
+    # Resolve nomes das contas analiticas em lote
+    analytic_ids: set = set()
+    for l in linhas_odoo:
+        if l.get("analytic_distribution"):
+            analytic_ids.update(int(k) for k in l["analytic_distribution"].keys())
+
+    analiticas: dict = {}
+    if analytic_ids:
+        aa = odoo.search("account.analytic.account", [
+            ["id", "in", list(analytic_ids)],
+        ], fields=["id", "name"], limit=len(analytic_ids))
+        analiticas = {r["id"]: r["name"] for r in aa}
+
+    # Monta linhas de compra enriquecidas e agrega despesa por categoria/mes
     despesa = {cat: {m: 0.0 for m in range(1, 13)} for cat in CATEGORIAS_DESPESA}
     despesa_states: dict = {cat: set() for cat in CATEGORIAS_DESPESA}
+    linhas_compra = []
 
-    for comp in compras:
-        if not comp.get("invoice_date"):
+    for l in linhas_odoo:
+        move_id = l["move_id"][0] if isinstance(l["move_id"], list) else l["move_id"]
+        compra = compras_by_id.get(move_id)
+        if not compra or not compra.get("invoice_date"):
             continue
-        mes = int(comp["invoice_date"].split("-")[1])
-        partner = comp["partner_id"][1] if comp.get("partner_id") else ""
-        cat = categorizar_despesa(partner, mapeamento)
+
+        mes = int(compra["invoice_date"].split("-")[1])
+
+        # Conta analitica: pega a de maior percentual
+        analitica_nome = ""
+        if l.get("analytic_distribution"):
+            top_id = max(l["analytic_distribution"], key=lambda k: l["analytic_distribution"][k])
+            analitica_nome = analiticas.get(int(top_id), "")
+
+        conta_nome = l["account_id"][1] if l.get("account_id") else ""
+        cat = categorizar_por_conta(analitica_nome, conta_nome, mapeamento)
         if cat not in despesa:
             cat = CATEGORIA_DEFAULT
-        despesa[cat][mes] += abs(comp.get("amount_total_signed") or 0.0)
-        despesa_states[cat].add(comp["state"])
+
+        valor = abs(l.get("price_subtotal") or 0.0)
+        despesa[cat][mes] += valor
+        despesa_states[cat].add(compra["state"])
+
+        linhas_compra.append({
+            "mes": mes,
+            "fornecedor": compra["partner_id"][1] if compra.get("partner_id") else "",
+            "fatura": compra.get("name", ""),
+            "categoria": cat,
+            "analitica": analitica_nome,
+            "conta": conta_nome,
+            "valor": valor,
+            "status": compra["state"],
+        })
 
     receita_obs = obs_from_states(receita_states)
     imposto_obs = obs_from_states(receita_states)
@@ -1163,8 +1218,7 @@ def gerar_dre(
         imposto_obs=imposto_obs,
         despesa_obs=despesa_obs,
         vendas=vendas,
-        compras=compras,
-        mapeamento=mapeamento,
+        linhas_compra=linhas_compra,
         output_path=output_path,
     )
 
@@ -1178,6 +1232,7 @@ def gerar_dre(
         "moeda": moeda,
         "total_faturas_venda": len(vendas),
         "total_faturas_compra": len(compras),
+        "total_linhas_despesa": len(linhas_compra),
         "receita_bruta_total": round(total_receita, 2),
         "despesas_total": round(total_despesa, 2),
         "resultado_liquido": round(total_receita - total_despesa, 2),

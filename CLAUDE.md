@@ -113,17 +113,21 @@ python integrations/clockify.py comparar-rti 2026-04-01 2026-04-30
 Gera DRE (Demonstracao do Resultado do Exercicio) em Excel com 3 abas:
 **DRE mensal**, **Detalhamento Receitas**, **Detalhamento Despesas**.
 
+Categoriza cada linha de despesa pela **conta analitica** (prioritario) ou pela
+**conta do plano de contas contabil** (fallback). A aba de detalhamento mostra
+as duas colunas para auditoria.
+
 ```
-# Uso basico — busca todas as faturas do ano no Odoo
+# Uso basico — sem mapeamento, tudo vai para "Software / SaaS / Infraestrutura"
 gerar_dre(ano=2025)
 
-# Com mapeamento de fornecedores para categorias de despesa
+# Com mapeamento por termos de conta analitica ou contabil
 gerar_dre(
   ano=2025,
-  mapeamento_fornecedores={
-    "Pessoal / Servicos Profissionais": ["Nome MEI", "Consultoria X"],
-    "Terceirizacao / Subcontratacao": ["Empresa Parceira Ltda"],
-    "Impostos e Taxas": ["SEFAZ", "Prefeitura"]
+  mapeamento_categorias={
+    "Pessoal / Servicos Profissionais": ["Pessoal", "RH", "Honorarios"],
+    "Terceirizacao / Subcontratacao": ["Subcontratacao", "Terceiros"],
+    "Impostos e Taxas": ["SEFAZ", "ISS", "Simples", "INSS"]
   }
 )
 
@@ -131,17 +135,24 @@ gerar_dre(
 gerar_dre(ano=2025, output_path="/tmp/dre_2025.xlsx")
 ```
 
+**Logica de categorizacao** (por linha de fatura):
+1. Verifica `analytic_distribution` — resolve ID para nome da conta analitica
+2. Tenta match do nome analitico com os termos do mapeamento
+3. Se nao encontrar, tenta match do nome da conta contabil (`account_id`)
+4. Fallback: `"Software / SaaS / Infraestrutura"`
+
 **Categorias de despesa** (`reports/dre.py::CATEGORIAS_DESPESA`):
 
-| Categoria | Uso |
+| Categoria | Uso tipico |
 |---|---|
 | `Pessoal / Servicos Profissionais` | Folha, MEIs, honorarios |
 | `Terceirizacao / Subcontratacao` | Servicos de terceiros |
-| `Impostos e Taxas` | SEFAZ, Prefeitura, taxas |
+| `Impostos e Taxas` | SEFAZ, Prefeitura, guias |
 | `Software / SaaS / Infraestrutura` | Default para nao mapeados |
 
 **Regras:**
 - Inclui faturas `posted` (Efetivo) e `draft` (Provisorio) — coluna Obs indica o status
+- Granularidade por linha de fatura, nao por cabecalho
 - Faturas em moeda estrangeira sao convertidas pelo Odoo pela taxa da data da fatura
 - Saida padrao: `reports/dre_{ano}.xlsx` na raiz do projeto
 - Dependencia: `pip install openpyxl`

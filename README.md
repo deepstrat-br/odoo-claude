@@ -204,18 +204,23 @@ Gera planilha Excel (.xlsx) com 3 abas: **DRE mensal**, **Detalhamento Receitas*
 gerar_dre(ano=2025)
 ```
 
-Com mapeamento de fornecedores para categorias de despesa:
+Com mapeamento de termos de contas analiticas ou contabeis para categorias:
 
 ```
 gerar_dre(
   ano=2025,
-  mapeamento_fornecedores={
-    "Pessoal / Servicos Profissionais": ["Fulano MEI", "Consultoria X"],
-    "Terceirizacao / Subcontratacao": ["Empresa Parceira Ltda"],
-    "Impostos e Taxas": ["SEFAZ", "Prefeitura"]
+  mapeamento_categorias={
+    "Pessoal / Servicos Profissionais": ["Pessoal", "RH", "Honorarios"],
+    "Terceirizacao / Subcontratacao": ["Subcontratacao", "Terceiros"],
+    "Impostos e Taxas": ["SEFAZ", "ISS", "Simples", "INSS"]
   }
 )
 ```
+
+**Logica de categorizacao** por linha de fatura:
+1. Conta analitica (`analytic_distribution`) — prioritario
+2. Conta do plano de contas (`account_id`) — fallback
+3. Default: `"Software / SaaS / Infraestrutura"`
 
 Categorias de despesa disponíveis:
 
@@ -226,7 +231,7 @@ Categorias de despesa disponíveis:
 | `Impostos e Taxas` | SEFAZ, Prefeitura, taxas |
 | `Software / SaaS / Infraestrutura` | Default para nao mapeados |
 
-O arquivo e salvo em `reports/dre_{ano}.xlsx`. Faturas em rascunho aparecem como "Provisorio"; faturas confirmadas como "Efetivo".
+O arquivo e salvo em `reports/dre_{ano}.xlsx`. A aba "Detalhamento Despesas" exibe a conta analitica e conta contabil de cada linha para auditoria. Faturas em rascunho aparecem como "Provisorio"; faturas confirmadas como "Efetivo".
 
 ---
 

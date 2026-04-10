@@ -82,45 +82,37 @@ _F_PROVISORIO = Font(name="Arial", size=10, color="C65911")
 # ─── Funcoes publicas ────────────────────────────────────────────────────────
 
 
-def carregar_mapeamento_fornecedores(config_path: str | None = None) -> dict[str, list[str]]:
-    """Carrega mapeamento {categoria: [fornecedores]} de um arquivo JSON.
+def categorizar_por_conta(
+    analitica_nome: str,
+    conta_nome: str,
+    mapeamento: dict[str, list[str]],
+) -> str:
+    """Categoriza despesa pela conta analitica (prioritario) ou conta contabil (fallback).
 
-    O arquivo deve ter o formato:
-    {
-        "Pessoal / Serviços Profissionais": ["Nome Fornecedor 1", "Nome 2"],
-        "Terceirização / Subcontratação": ["Empresa X"],
-        "Impostos e Taxas": ["SEFAZ", "Receita Federal"]
-    }
-
-    Fornecedores nao listados serao categorizados como CATEGORIA_DEFAULT.
+    Compara os nomes de forma case-insensitive e por substring.
 
     Args:
-        config_path: Caminho para o JSON. Se None ou arquivo nao existir,
-                     retorna mapeamento vazio (tudo vai para CATEGORIA_DEFAULT).
-
-    Returns:
-        dict {categoria: [nomes de fornecedores]}.
-    """
-    if not config_path or not os.path.exists(config_path):
-        return {}
-    with open(config_path, encoding="utf-8") as f:
-        return json.load(f)
-
-
-def categorizar_despesa(partner_name: str, mapeamento: dict[str, list[str]]) -> str:
-    """Categoriza despesa pelo nome do fornecedor usando o mapeamento fornecido.
-
-    Args:
-        partner_name: Nome do fornecedor (partner_id[1] do Odoo).
-        mapeamento: dict {categoria: [nomes]} carregado de config ou passado diretamente.
-                    Se vazio, retorna CATEGORIA_DEFAULT para todos.
+        analitica_nome: Nome da conta analitica resolvida (vazio se nao houver distribuicao).
+        conta_nome: Nome da conta do plano de contas (account_id[1] do Odoo).
+        mapeamento: {categoria: [termos]} para classificar. Se vazio, retorna CATEGORIA_DEFAULT.
 
     Returns:
         Nome da categoria de despesa.
     """
-    pn = (partner_name or "").lower()
-    for cat, nomes in mapeamento.items():
-        if any(n.lower() in pn for n in nomes):
+    def _match(nome: str) -> str | None:
+        n = nome.lower()
+        for cat, termos in mapeamento.items():
+            if any(t.lower() in n for t in termos):
+                return cat
+        return None
+
+    if analitica_nome:
+        cat = _match(analitica_nome)
+        if cat:
+            return cat
+    if conta_nome:
+        cat = _match(conta_nome)
+        if cat:
             return cat
     return CATEGORIA_DEFAULT
 
@@ -142,7 +134,7 @@ def obs_from_states(states: set) -> str:
 
 def gerar_excel_dre(*, ano, hoje, empresa, moeda, receita, imposto, despesa,
                     receita_obs, imposto_obs, despesa_obs,
-                    vendas, compras, mapeamento, output_path):
+                    vendas, linhas_compra, output_path):
     """Gera o arquivo Excel completo do DRE e salva em output_path.
 
     Args:
@@ -156,8 +148,8 @@ def gerar_excel_dre(*, ano, hoje, empresa, moeda, receita, imposto, despesa,
         receita_obs, imposto_obs: str com estado das faturas.
         despesa_obs: dict {categoria: str} com estado por categoria.
         vendas: lista de faturas de venda (dicts do Odoo).
-        compras: lista de faturas de compra (dicts do Odoo).
-        mapeamento: dict {categoria: [nomes]} para categorizacao de despesas.
+        linhas_compra: lista de linhas de compra enriquecidas com categoria, conta e analitica.
+                       Cada item: {mes, fornecedor, fatura, categoria, analitica, conta, valor, status}.
         output_path: caminho para salvar o .xlsx.
 
     Returns:
@@ -167,7 +159,7 @@ def gerar_excel_dre(*, ano, hoje, empresa, moeda, receita, imposto, despesa,
     _build_dre_sheet(wb, ano, hoje, empresa, moeda, receita, imposto, despesa,
                      receita_obs, imposto_obs, despesa_obs)
     _build_receitas_sheet(wb, ano, vendas, moeda)
-    _build_despesas_sheet(wb, ano, compras, mapeamento, moeda)
+    _build_despesas_sheet(wb, ano, linhas_compra, moeda)
     wb.save(output_path)
     return output_path
 
@@ -394,45 +386,44 @@ def _build_receitas_sheet(wb, ano, vendas, moeda):
 # ─── Aba 3: Detalhamento Despesas ────────────────────────────────────────────
 
 
-def _build_despesas_sheet(wb, ano, compras, mapeamento, moeda):
+def _build_despesas_sheet(wb, ano, linhas_compra, moeda):
     ws = wb.create_sheet(title="Detalhamento Despesas")
 
-    ws.merge_cells("A1:E1")
+    n_cols = 8
+    ws.merge_cells(f"A1:{get_column_letter(n_cols)}1")
     c = ws["A1"]
     c.value = f"Detalhamento de Despesas \u2014 {ano}"
     c.font = _S_TITULO["font"]
     c.fill = _S_TITULO["fill"]
     c.alignment = Alignment(horizontal="center")
-    _fill_row(ws, 1, _S_TITULO["fill"], 1, 5)
+    _fill_row(ws, 1, _S_TITULO["fill"], 1, n_cols)
 
-    headers = ["M\u00eas", "Fornecedor", "Categoria", f"Valor ({moeda})", "Status"]
+    headers = [
+        "M\u00eas", "Fornecedor", "Fatura", "Categoria",
+        "Conta Anal\u00edtica", "Conta Cont\u00e1bil", f"Valor ({moeda})", "Status",
+    ]
     for i, h in enumerate(headers, 1):
         c = ws.cell(row=2, column=i, value=h)
         c.font = _S_HEADER["font"]
         c.fill = _S_HEADER["fill"]
         c.alignment = Alignment(horizontal="center")
 
-    for i, w in enumerate([8, 35, 38, 16, 12], 1):
+    for i, w in enumerate([8, 28, 18, 32, 25, 30, 16, 12], 1):
         ws.column_dimensions[get_column_letter(i)].width = w
 
     row = 3
-    for comp in compras:
-        mes_num = int(comp["invoice_date"].split("-")[1])
-        partner = comp["partner_id"][1] if comp["partner_id"] else "Desconhecido"
-        cat = categorizar_despesa(partner, mapeamento)
-        valor = -comp["amount_total_signed"]
-        status = "Efetivo" if comp["state"] == "posted" else "Provis\u00f3rio"
-
-        ws.cell(row=row, column=1, value=MESES[mes_num - 1])
-        ws.cell(row=row, column=2, value=partner)
-        ws.cell(row=row, column=3, value=cat)
-
-        c = ws.cell(row=row, column=4, value=round(valor, 2))
+    for linha in linhas_compra:
+        status_posted = linha["status"] == "posted"
+        ws.cell(row=row, column=1, value=MESES[linha["mes"] - 1])
+        ws.cell(row=row, column=2, value=linha["fornecedor"])
+        ws.cell(row=row, column=3, value=linha["fatura"])
+        ws.cell(row=row, column=4, value=linha["categoria"])
+        ws.cell(row=row, column=5, value=linha["analitica"])
+        ws.cell(row=row, column=6, value=linha["conta"])
+        c = ws.cell(row=row, column=7, value=round(linha["valor"], 2))
         c.number_format = FMT_BRL
-
-        sc = ws.cell(row=row, column=5, value=status)
-        sc.font = _F_EFETIVO if comp["state"] == "posted" else _F_PROVISORIO
-
+        sc = ws.cell(row=row, column=8, value="Efetivo" if status_posted else "Provis\u00f3rio")
+        sc.font = _F_EFETIVO if status_posted else _F_PROVISORIO
         row += 1
 
     ws.freeze_panes = "A3"
