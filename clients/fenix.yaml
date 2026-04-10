@@ -1,0 +1,32 @@
+# Configuracao do cliente: Fenix
+#
+# CREDENCIAIS: Use variaveis de ambiente — nunca commitar credenciais aqui.
+# Variaveis esperadas: FENIX_ODOO_URL, FENIX_ODOO_DB, FENIX_ODOO_LOGIN, FENIX_ODOO_KEY
+
+slug: fenix
+nome: Golden Fênix
+moeda: BRL
+
+contexto:
+  descricao: "" # descreva o negocio do cliente
+  segmento: "" # ex: "Industria / Manufatura"
+  modulos_ativos: [] # lista os modulos Odoo em uso
+
+odoo:
+  url: https://goldenfenix.odoo.com/
+  db: goldenfenix-main-23353771
+
+# IDs de tipos de atividade (variam por instancia Odoo)
+# Para descobrir os seus: python odoo.py busca mail.activity.type "id,name"
+activity_types:
+  call: # "Ligacao / Call"
+  todo: # "To Do / Pendencia"
+
+# Integracao WhatsApp
+whatsapp:
+  template_abordagem_leads: null
+
+# Configuracoes de CRM
+crm:
+  stage_novos: "Novos"
+  metodologia:
