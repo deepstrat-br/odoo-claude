@@ -64,6 +64,8 @@ odoo-deepstrat/
 │       └── import_po.py             # criacao de PO + linhas via YAML
 ├── integrations/
 │   └── clockify.py                  # Clockify <-> account.analytic.line
+├── reports/
+│   └── dre.py                       # gerador de DRE em Excel (.xlsx)
 ├── data/                            # entradas temporarias (nao versionadas)
 │   ├── tasks/
 │   └── purchase/
@@ -105,6 +107,44 @@ python integrations/clockify.py entradas 2026-04-01 2026-04-30
 python integrations/clockify.py comparar 2026-04-01 2026-04-30
 python integrations/clockify.py comparar-rti 2026-04-01 2026-04-30
 ```
+
+## MCP Tool — gerar_dre
+
+Gera DRE (Demonstracao do Resultado do Exercicio) em Excel com 3 abas:
+**DRE mensal**, **Detalhamento Receitas**, **Detalhamento Despesas**.
+
+```
+# Uso basico — busca todas as faturas do ano no Odoo
+gerar_dre(ano=2025)
+
+# Com mapeamento de fornecedores para categorias de despesa
+gerar_dre(
+  ano=2025,
+  mapeamento_fornecedores={
+    "Pessoal / Servicos Profissionais": ["Nome MEI", "Consultoria X"],
+    "Terceirizacao / Subcontratacao": ["Empresa Parceira Ltda"],
+    "Impostos e Taxas": ["SEFAZ", "Prefeitura"]
+  }
+)
+
+# Salvar em caminho especifico
+gerar_dre(ano=2025, output_path="/tmp/dre_2025.xlsx")
+```
+
+**Categorias de despesa** (`reports/dre.py::CATEGORIAS_DESPESA`):
+
+| Categoria | Uso |
+|---|---|
+| `Pessoal / Servicos Profissionais` | Folha, MEIs, honorarios |
+| `Terceirizacao / Subcontratacao` | Servicos de terceiros |
+| `Impostos e Taxas` | SEFAZ, Prefeitura, taxas |
+| `Software / SaaS / Infraestrutura` | Default para nao mapeados |
+
+**Regras:**
+- Inclui faturas `posted` (Efetivo) e `draft` (Provisorio) — coluna Obs indica o status
+- Faturas em moeda estrangeira sao convertidas pelo Odoo pela taxa da data da fatura
+- Saida padrao: `reports/dre_{ano}.xlsx` na raiz do projeto
+- Dependencia: `pip install openpyxl`
 
 ---
 

@@ -14,7 +14,7 @@ git clone https://github.com/deepstrat-br/odoo-claude.git
 cd odoo-deepstrat
 
 # 2. Instale dependencias
-pip install pyyaml python-dotenv
+pip install pyyaml python-dotenv openpyxl
 
 # 3. Configure suas credenciais
 cp .env.example .env
@@ -68,6 +68,9 @@ odoo-deepstrat/
 ├── integrations/                    # Integracoes com sistemas externos
 │   └── clockify.py                  # Clockify <-> account.analytic.line
 │
+├── reports/                         # Geradores de relatorios
+│   └── dre.py                       # DRE (Demonstracao do Resultado) em Excel
+│
 ├── data/                            # Entradas temporarias (nao versionadas)
 │   ├── tasks/
 │   └── purchase/
@@ -96,7 +99,7 @@ O `mcp_server.py` expoe o Odoo como tools via [Model Context Protocol](https://m
 | **CRUD generico**      | `buscar`, `contar`, `ler_registro`, `criar_registro`, `atualizar_registro`, `deletar_registro`, `listar_campos`, `resolver_nome` |
 | **Projetos & Tarefas** | `listar_projetos`, `listar_tarefas`, `criar_tarefa`, `mover_tarefa`, `lancar_horas`                                              |
 | **CRM**                | `pipeline_crm`, `leads_pendentes_qualificacao`, `qualificar_lead`                                                                |
-| **Financeiro**         | `resumo_financeiro`                                                                                                              |
+| **Financeiro**         | `resumo_financeiro`, `gerar_dre`                                                                                                 |
 | **WhatsApp**           | `listar_templates_whatsapp`, `enviar_whatsapp`, `preview_whatsapp`                                                               |
 
 ### Como usar com Claude Code
@@ -186,6 +189,44 @@ lines:
       Descricao linha 1
       Descricao linha 2
 ```
+
+---
+
+## Relatorios Financeiros
+
+### DRE (Demonstracao do Resultado do Exercicio)
+
+Gera planilha Excel (.xlsx) com 3 abas: **DRE mensal**, **Detalhamento Receitas** e **Detalhamento Despesas**.
+
+**Via MCP (Claude Code):**
+
+```
+gerar_dre(ano=2025)
+```
+
+Com mapeamento de fornecedores para categorias de despesa:
+
+```
+gerar_dre(
+  ano=2025,
+  mapeamento_fornecedores={
+    "Pessoal / Servicos Profissionais": ["Fulano MEI", "Consultoria X"],
+    "Terceirizacao / Subcontratacao": ["Empresa Parceira Ltda"],
+    "Impostos e Taxas": ["SEFAZ", "Prefeitura"]
+  }
+)
+```
+
+Categorias de despesa disponíveis:
+
+| Categoria | Descricao |
+|---|---|
+| `Pessoal / Servicos Profissionais` | Folha, MEIs, honorarios |
+| `Terceirizacao / Subcontratacao` | Servicos de terceiros |
+| `Impostos e Taxas` | SEFAZ, Prefeitura, taxas |
+| `Software / SaaS / Infraestrutura` | Default para nao mapeados |
+
+O arquivo e salvo em `reports/dre_{ano}.xlsx`. Faturas em rascunho aparecem como "Provisorio"; faturas confirmadas como "Efetivo".
 
 ---
 

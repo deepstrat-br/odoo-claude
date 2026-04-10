@@ -9,6 +9,7 @@ Tools especializadas: listar_projetos, listar_tarefas, criar_tarefa, mover_taref
     lancar_horas, resumo_financeiro, pipeline_crm, resolver_nome.
 Tools de CRM/leads: leads_pendentes_qualificacao, qualificar_lead.
 Tools de WhatsApp: listar_templates_whatsapp, preview_whatsapp, enviar_whatsapp.
+Tools de Relatorios: gerar_dre.
 
 MOEDA PADRAO: Todos os valores monetarios estao em BRL (Real brasileiro).
 Nunca assuma USD, EUR ou outra moeda — o padrao e sempre R$.
@@ -1039,6 +1040,147 @@ def preview_whatsapp(
         "template": template["name"],
         "telefone": composer.get("phone"),
         "preview": text,
+    }, default=serialize, ensure_ascii=False)
+
+
+# ─── Relatorios ──────────────────────────────────────────────────────────────
+
+
+@mcp.tool()
+def gerar_dre(
+    ano: int,
+    mapeamento_fornecedores: dict | None = None,
+    output_path: str | None = None,
+) -> str:
+    """Gera DRE (Demonstracao do Resultado do Exercicio) em Excel para o ano especificado.
+
+    Busca faturas de venda (receita) e compra (despesas) no Odoo, categoriza fornecedores
+    e gera planilha .xlsx com 3 abas: DRE mensal com formulas, detalhamento de receitas
+    e detalhamento de despesas.
+
+    Categorias de despesa disponiveis para mapeamento_fornecedores:
+    - "Pessoal / Servicos Profissionais"
+    - "Terceirizacao / Subcontratacao"
+    - "Impostos e Taxas"
+    - "Software / SaaS / Infraestrutura" (default para nao mapeados)
+
+    Args:
+        ano: Ano fiscal (ex: 2025).
+        mapeamento_fornecedores: {categoria: ["Nome Fornecedor", ...]} para classificar despesas.
+                                 Nao obrigatorio — fornecedores nao listados vao para
+                                 "Software / SaaS / Infraestrutura".
+        output_path: Caminho do arquivo .xlsx a gerar. Default: "reports/dre_{ano}.xlsx".
+
+    Returns: JSON com caminho do arquivo, resumo de receitas/despesas e total de faturas processadas.
+    """
+    import os
+    from reports.dre import (
+        gerar_excel_dre, categorizar_despesa, obs_from_states,
+        CATEGORIAS_DESPESA, CATEGORIA_DEFAULT,
+    )
+
+    odoo = get_odoo()
+    hoje = str(date.today())
+    mapeamento = mapeamento_fornecedores or {}
+
+    if output_path is None:
+        output_path = os.path.join(
+            os.path.dirname(os.path.abspath(__file__)), "reports", f"dre_{ano}.xlsx"
+        )
+
+    # Info da empresa
+    company = odoo.search("res.company", [], fields=["name", "currency_id"], limit=1)
+    empresa = company[0]["name"] if company else "Empresa"
+    moeda_raw = company[0]["currency_id"][1] if company and company[0].get("currency_id") else "BRL"
+    # Extrai codigo da moeda (ex: "BRL" de "BRL" ou "[BRL] Real")
+    moeda = moeda_raw.split()[0].strip("[]") if moeda_raw else "BRL"
+
+    campos_fatura = [
+        "name", "invoice_date", "move_type", "state",
+        "partner_id", "currency_id",
+        "amount_total_signed", "amount_untaxed_signed",
+    ]
+    data_ini = f"{ano}-01-01"
+    data_fim = f"{ano}-12-31"
+
+    vendas = odoo.search("account.move", [
+        ["move_type", "=", "out_invoice"],
+        ["state", "in", ["posted", "draft"]],
+        ["invoice_date", ">=", data_ini],
+        ["invoice_date", "<=", data_fim],
+    ], fields=campos_fatura, limit=500)
+
+    compras = odoo.search("account.move", [
+        ["move_type", "=", "in_invoice"],
+        ["state", "in", ["posted", "draft"]],
+        ["invoice_date", ">=", data_ini],
+        ["invoice_date", "<=", data_fim],
+    ], fields=campos_fatura, limit=500)
+
+    # Agrega receita e impostos por mes
+    receita = {m: 0.0 for m in range(1, 13)}
+    imposto = {m: 0.0 for m in range(1, 13)}
+    receita_states: set = set()
+
+    for v in vendas:
+        if not v.get("invoice_date"):
+            continue
+        mes = int(v["invoice_date"].split("-")[1])
+        total = v.get("amount_total_signed") or 0.0
+        untaxed = v.get("amount_untaxed_signed") or total
+        receita[mes] += untaxed
+        imposto[mes] += total - untaxed
+        receita_states.add(v["state"])
+
+    # Agrega despesas por categoria e mes
+    despesa = {cat: {m: 0.0 for m in range(1, 13)} for cat in CATEGORIAS_DESPESA}
+    despesa_states: dict = {cat: set() for cat in CATEGORIAS_DESPESA}
+
+    for comp in compras:
+        if not comp.get("invoice_date"):
+            continue
+        mes = int(comp["invoice_date"].split("-")[1])
+        partner = comp["partner_id"][1] if comp.get("partner_id") else ""
+        cat = categorizar_despesa(partner, mapeamento)
+        if cat not in despesa:
+            cat = CATEGORIA_DEFAULT
+        despesa[cat][mes] += abs(comp.get("amount_total_signed") or 0.0)
+        despesa_states[cat].add(comp["state"])
+
+    receita_obs = obs_from_states(receita_states)
+    imposto_obs = obs_from_states(receita_states)
+    despesa_obs = {cat: obs_from_states(despesa_states[cat]) for cat in CATEGORIAS_DESPESA}
+
+    path = gerar_excel_dre(
+        ano=ano,
+        hoje=hoje,
+        empresa=empresa,
+        moeda=moeda,
+        receita=receita,
+        imposto=imposto,
+        despesa=despesa,
+        receita_obs=receita_obs,
+        imposto_obs=imposto_obs,
+        despesa_obs=despesa_obs,
+        vendas=vendas,
+        compras=compras,
+        mapeamento=mapeamento,
+        output_path=output_path,
+    )
+
+    total_receita = sum(receita.values())
+    total_despesa = sum(sum(v.values()) for v in despesa.values())
+
+    return json.dumps({
+        "arquivo": path,
+        "ano": ano,
+        "empresa": empresa,
+        "moeda": moeda,
+        "total_faturas_venda": len(vendas),
+        "total_faturas_compra": len(compras),
+        "receita_bruta_total": round(total_receita, 2),
+        "despesas_total": round(total_despesa, 2),
+        "resultado_liquido": round(total_receita - total_despesa, 2),
     }, default=serialize, ensure_ascii=False)
 
 
