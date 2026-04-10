@@ -11,8 +11,6 @@ Tools de CRM/leads: leads_pendentes_qualificacao, qualificar_lead.
 Tools de WhatsApp: listar_templates_whatsapp, preview_whatsapp, enviar_whatsapp.
 Tools de Relatorios: gerar_dre.
 
-MOEDA PADRAO: Todos os valores monetarios estao em BRL (Real brasileiro).
-Nunca assuma USD, EUR ou outra moeda — o padrao e sempre R$.
 """
 
 import json
@@ -360,62 +358,75 @@ def mover_tarefa(tarefa_id: int, etapa: str) -> str:
 def resumo_financeiro() -> str:
     """Retorna painel financeiro: faturas a receber/vencidas, contas a pagar e pedidos de venda abertos.
 
-    Todos os valores monetarios estao em BRL (Real brasileiro).
+    Totais sempre em BRL (amount_residual_signed = valor convertido pelo Odoo na taxa da data da fatura).
+    Faturas em moeda estrangeira aparecem com detalhamento: valor original, BRL equivalente e taxa usada.
 
-    Returns JSON {data, moeda, faturas_em_aberto, faturas_vencidas, total_a_receber_BRL,
-                  pedidos_venda_abertos, contas_a_pagar, total_a_pagar_BRL}.
+    Returns JSON com totais BRL, contagens e lista de faturas em moeda estrangeira.
     """
     odoo = get_odoo()
     hoje = str(date.today())
 
-    faturas_abertas = odoo.count("account.move", [
-        ["move_type", "=", "out_invoice"],
-        ["payment_state", "!=", "paid"],
-        ["state", "=", "posted"],
-    ])
+    campos_fatura = [
+        "name", "partner_id", "invoice_date_due", "currency_id",
+        "amount_residual", "amount_residual_signed",
+    ]
 
-    faturas_vencidas = odoo.count("account.move", [
-        ["move_type", "=", "out_invoice"],
-        ["payment_state", "!=", "paid"],
-        ["state", "=", "posted"],
-        ["invoice_date_due", "<", hoje],
-    ])
-
-    vendas_abertas = odoo.count("sale.order", [
-        ["state", "in", ["draft", "sent", "sale"]],
-    ])
-
-    contas_pagar = odoo.count("account.move", [
-        ["move_type", "=", "in_invoice"],
-        ["payment_state", "!=", "paid"],
-        ["state", "=", "posted"],
-    ])
-
-    # Totais monetarios (a receber e a pagar)
     faturas_rec = odoo.search("account.move", [
         ["move_type", "=", "out_invoice"],
         ["payment_state", "!=", "paid"],
         ["state", "=", "posted"],
-    ], fields=["amount_residual", "currency_id"], limit=200)
-    total_receber = sum(f["amount_residual"] for f in faturas_rec)
+    ], fields=campos_fatura, limit=None)
 
     faturas_pag = odoo.search("account.move", [
         ["move_type", "=", "in_invoice"],
         ["payment_state", "!=", "paid"],
         ["state", "=", "posted"],
-    ], fields=["amount_residual", "currency_id"], limit=200)
-    total_pagar = sum(f["amount_residual"] for f in faturas_pag)
+    ], fields=campos_fatura, limit=None)
+
+    vendas_abertas = odoo.count("sale.order", [["state", "in", ["draft", "sent", "sale"]]])
+
+    def _resumir(faturas: list) -> dict:
+        """Agrega faturas: total BRL + detalhamento por moeda estrangeira."""
+        total_brl = 0.0
+        vencidas = 0
+        estrangeiras = []
+        for f in faturas:
+            # amount_residual_signed é negativo em compras (saida de caixa); usamos abs
+            total_brl += abs(f.get("amount_residual_signed") or 0.0)
+            vencimento = f.get("invoice_date_due") or ""
+            if vencimento and vencimento < hoje:
+                vencidas += 1
+            moeda = f["currency_id"][1].split()[0] if f.get("currency_id") else "BRL"
+            if moeda and moeda != "BRL":
+                valor_orig = abs(f.get("amount_residual") or 0.0)
+                valor_brl = abs(f.get("amount_residual_signed") or 0.0)
+                taxa = round(valor_brl / valor_orig, 4) if valor_orig else None
+                estrangeiras.append({
+                    "fatura": f.get("name"),
+                    "parceiro": f["partner_id"][1] if f.get("partner_id") else "",
+                    "vencimento": vencimento,
+                    "moeda_original": moeda,
+                    f"valor_{moeda}": round(valor_orig, 2),
+                    "valor_BRL": round(valor_brl, 2),
+                    "taxa_cambio": taxa,
+                })
+        return {
+            "total": len(faturas),
+            "vencidas": vencidas,
+            "total_BRL": round(total_brl, 2),
+            "em_moeda_estrangeira": estrangeiras,
+        }
+
+    rec = _resumir(faturas_rec)
+    pag = _resumir(faturas_pag)
 
     return json.dumps({
         "data": hoje,
-        "moeda": "BRL",
-        "faturas_em_aberto": faturas_abertas,
-        "faturas_vencidas": faturas_vencidas,
-        "total_a_receber_BRL": round(total_receber, 2),
+        "moeda_base": "BRL",
+        "a_receber": rec,
+        "a_pagar": pag,
         "pedidos_venda_abertos": vendas_abertas,
-        "contas_a_pagar": contas_pagar,
-        "total_a_pagar_BRL": round(total_pagar, 2),
-    })
+    }, default=serialize, ensure_ascii=False)
 
 
 @mcp.tool(name="pipeline-CRM")
@@ -1078,13 +1089,9 @@ def gerar_dre(
     Returns: JSON com caminho do arquivo, resumo financeiro e linhas processadas.
     """
     import os
-    from reports.dre import (
-        gerar_excel_dre, categorizar_por_conta, obs_from_states,
-        CATEGORIAS_DESPESA, CATEGORIA_DEFAULT,
-    )
+    from reports.dre import buscar_dados_dre, gerar_excel_dre
 
     odoo = get_odoo()
-    hoje = str(date.today())
     mapeamento = mapeamento_categorias or {}
 
     if output_path is None:
@@ -1092,147 +1099,19 @@ def gerar_dre(
             os.path.dirname(os.path.abspath(__file__)), "reports", f"dre_{ano}.xlsx"
         )
 
-    # Info da empresa
-    company = odoo.search("res.company", [], fields=["name", "currency_id"], limit=1)
-    empresa = company[0]["name"] if company else "Empresa"
-    moeda_raw = company[0]["currency_id"][1] if company and company[0].get("currency_id") else "BRL"
-    moeda = moeda_raw.split()[0].strip("[]") if moeda_raw else "BRL"
+    dados = buscar_dados_dre(odoo, ano, mapeamento)
+    path = gerar_excel_dre(ano=ano, output_path=output_path, **{k: dados[k] for k in dados if k != "hoje"}, hoje=dados["hoje"])
 
-    campos_fatura = [
-        "name", "invoice_date", "move_type", "state",
-        "partner_id", "currency_id",
-        "amount_total_signed", "amount_untaxed_signed",
-    ]
-    data_ini = f"{ano}-01-01"
-    data_fim = f"{ano}-12-31"
-
-    vendas = odoo.search("account.move", [
-        ["move_type", "=", "out_invoice"],
-        ["state", "in", ["posted", "draft"]],
-        ["invoice_date", ">=", data_ini],
-        ["invoice_date", "<=", data_fim],
-    ], fields=campos_fatura, limit=500)
-
-    compras = odoo.search("account.move", [
-        ["move_type", "=", "in_invoice"],
-        ["state", "in", ["posted", "draft"]],
-        ["invoice_date", ">=", data_ini],
-        ["invoice_date", "<=", data_fim],
-    ], fields=campos_fatura, limit=500)
-
-    # Agrega receita e impostos por mes
-    receita = {m: 0.0 for m in range(1, 13)}
-    imposto = {m: 0.0 for m in range(1, 13)}
-    receita_states: set = set()
-
-    for v in vendas:
-        if not v.get("invoice_date"):
-            continue
-        mes = int(v["invoice_date"].split("-")[1])
-        total = v.get("amount_total_signed") or 0.0
-        untaxed = v.get("amount_untaxed_signed") or total
-        receita[mes] += untaxed
-        imposto[mes] += total - untaxed
-        receita_states.add(v["state"])
-
-    # Busca linhas das faturas de compra para categorizar por conta analitica / contabil
-    compras_by_id = {c["id"]: c for c in compras}
-    compra_ids = list(compras_by_id.keys())
-
-    linhas_odoo = []
-    if compra_ids:
-        linhas_odoo = odoo.search("account.move.line", [
-            ["move_id", "in", compra_ids],
-            ["display_type", "not in", ["line_section", "line_note"]],
-            ["tax_line_id", "=", False],
-            ["price_subtotal", "!=", 0],
-        ], fields=[
-            "move_id", "name", "account_id", "analytic_distribution", "price_subtotal",
-        ], limit=2000)
-
-    # Resolve nomes das contas analiticas em lote
-    analytic_ids: set = set()
-    for l in linhas_odoo:
-        if l.get("analytic_distribution"):
-            analytic_ids.update(int(k) for k in l["analytic_distribution"].keys())
-
-    analiticas: dict = {}
-    if analytic_ids:
-        aa = odoo.search("account.analytic.account", [
-            ["id", "in", list(analytic_ids)],
-        ], fields=["id", "name"], limit=len(analytic_ids))
-        analiticas = {r["id"]: r["name"] for r in aa}
-
-    # Monta linhas de compra enriquecidas e agrega despesa por categoria/mes
-    despesa = {cat: {m: 0.0 for m in range(1, 13)} for cat in CATEGORIAS_DESPESA}
-    despesa_states: dict = {cat: set() for cat in CATEGORIAS_DESPESA}
-    linhas_compra = []
-
-    for l in linhas_odoo:
-        move_id = l["move_id"][0] if isinstance(l["move_id"], list) else l["move_id"]
-        compra = compras_by_id.get(move_id)
-        if not compra or not compra.get("invoice_date"):
-            continue
-
-        mes = int(compra["invoice_date"].split("-")[1])
-
-        # Conta analitica: pega a de maior percentual
-        analitica_nome = ""
-        if l.get("analytic_distribution"):
-            top_id = max(l["analytic_distribution"], key=lambda k: l["analytic_distribution"][k])
-            analitica_nome = analiticas.get(int(top_id), "")
-
-        conta_nome = l["account_id"][1] if l.get("account_id") else ""
-        cat = categorizar_por_conta(analitica_nome, conta_nome, mapeamento)
-        if cat not in despesa:
-            cat = CATEGORIA_DEFAULT
-
-        valor = abs(l.get("price_subtotal") or 0.0)
-        despesa[cat][mes] += valor
-        despesa_states[cat].add(compra["state"])
-
-        linhas_compra.append({
-            "mes": mes,
-            "fornecedor": compra["partner_id"][1] if compra.get("partner_id") else "",
-            "fatura": compra.get("name", ""),
-            "categoria": cat,
-            "analitica": analitica_nome,
-            "conta": conta_nome,
-            "valor": valor,
-            "status": compra["state"],
-        })
-
-    receita_obs = obs_from_states(receita_states)
-    imposto_obs = obs_from_states(receita_states)
-    despesa_obs = {cat: obs_from_states(despesa_states[cat]) for cat in CATEGORIAS_DESPESA}
-
-    path = gerar_excel_dre(
-        ano=ano,
-        hoje=hoje,
-        empresa=empresa,
-        moeda=moeda,
-        receita=receita,
-        imposto=imposto,
-        despesa=despesa,
-        receita_obs=receita_obs,
-        imposto_obs=imposto_obs,
-        despesa_obs=despesa_obs,
-        vendas=vendas,
-        linhas_compra=linhas_compra,
-        output_path=output_path,
-    )
-
-    total_receita = sum(receita.values())
-    total_despesa = sum(sum(v.values()) for v in despesa.values())
+    total_receita = sum(dados["receita"].values())
+    total_despesa = sum(sum(v.values()) for v in dados["despesa"].values())
 
     return json.dumps({
         "arquivo": path,
         "ano": ano,
-        "empresa": empresa,
-        "moeda": moeda,
-        "total_faturas_venda": len(vendas),
-        "total_faturas_compra": len(compras),
-        "total_linhas_despesa": len(linhas_compra),
+        "empresa": dados["empresa"],
+        "moeda": dados["moeda"],
+        "total_faturas_venda": len(dados["vendas"]),
+        "total_linhas_despesa": len(dados["linhas_compra"]),
         "receita_bruta_total": round(total_receita, 2),
         "despesas_total": round(total_despesa, 2),
         "resultado_liquido": round(total_receita - total_despesa, 2),

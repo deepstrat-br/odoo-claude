@@ -74,18 +74,37 @@ class OdooClient:
             model: Modelo Odoo (ex: 'res.partner').
             filters: Domain Odoo [[campo, op, valor], ...]. None = sem filtro.
             fields: Campos a retornar. None = todos.
-            limit: Maximo de registros (default 80).
+            limit: Maximo de registros (default 80). None = busca todos via paginacao
+                   automatica (paginas de 200 ate esgotar os resultados).
             order: Ordenacao SQL (ex: 'name asc').
 
         Returns:
             Lista de dicionarios com os registros encontrados.
         """
-        kwargs = {"limit": limit}
-        if fields:
-            kwargs["fields"] = fields
-        if order:
-            kwargs["order"] = order
-        return self._call(model, "search_read", [filters or []], kwargs)
+        if limit is not None:
+            kwargs = {"limit": limit}
+            if fields:
+                kwargs["fields"] = fields
+            if order:
+                kwargs["order"] = order
+            return self._call(model, "search_read", [filters or []], kwargs)
+
+        # limit=None: pagina automaticamente ate buscar todos os registros
+        PAGE = 500
+        results = []
+        offset = 0
+        while True:
+            kwargs = {"limit": PAGE, "offset": offset}
+            if fields:
+                kwargs["fields"] = fields
+            if order:
+                kwargs["order"] = order
+            page = self._call(model, "search_read", [filters or []], kwargs)
+            results.extend(page)
+            if len(page) < PAGE:
+                break
+            offset += PAGE
+        return results
 
     def count(self, model, filters=None):
         """Conta registros sem retornar dados. Mais eficiente que len(search(...)).

@@ -13,7 +13,24 @@ Helper CLI + modulo Python para o Odoo da Deepstrat via XML-RPC.
 
 Credenciais carregadas automaticamente pelo `odoo.py`. Cada usuario configura seu proprio `.env`.
 
-**Moeda: BRL (R$).** A Deepstrat opera no Brasil. A moeda base do Odoo é BRL (Real brasileiro). Todos os valores monetarios retornados pelo MCP/CLI estao em BRL, salvo quando `currency_id` indicar outra moeda. Nunca assumir USD, EUR ou outra moeda.
+**Moeda: BRL (R$).** A Deepstrat opera no Brasil. A moeda base do Odoo é BRL (Real brasileiro). Nunca assumir USD, EUR ou outra moeda sem verificar `currency_id`.
+
+**Regra de moeda em consultas financeiras.**
+Faturas e POs podem estar em moeda estrangeira (USD, EUR, etc.). Ao buscar registros financeiros, sempre inclua os campos abaixo e trate-os corretamente:
+
+| Campo | Moeda | Uso |
+|---|---|---|
+| `currency_id` | — | Moeda original do documento |
+| `amount_total` / `amount_residual` | moeda original | Valor na moeda do documento |
+| `amount_total_signed` / `amount_residual_signed` | BRL | Valor convertido pelo Odoo (taxa da data da fatura) |
+
+**Quando exibir valores monetários, sempre informe:**
+- Valor original (ex: USD 1.200,00)
+- Equivalente BRL (ex: BRL 6.000,00)
+- Taxa usada (ex: taxa 5,0000 — calculada como `amount_total_signed / amount_total`)
+
+Se `currency_id` for BRL, `amount_total == amount_total_signed` (sem conversão).
+Se for moeda estrangeira, use `amount_total_signed` para somar com outros valores BRL.
 
 ---
 
@@ -65,7 +82,7 @@ odoo-deepstrat/
 ├── integrations/
 │   └── clockify.py                  # Clockify <-> account.analytic.line
 ├── reports/
-│   └── dre.py                       # gerador de DRE em Excel (.xlsx)
+│   └── dre.py                       # gerador de DRE em Excel (.xlsx) + CLI
 ├── data/                            # entradas temporarias (nao versionadas)
 │   ├── tasks/
 │   └── purchase/
@@ -108,7 +125,7 @@ python integrations/clockify.py comparar 2026-04-01 2026-04-30
 python integrations/clockify.py comparar-rti 2026-04-01 2026-04-30
 ```
 
-## MCP Tool — gerar_dre
+## DRE — reports/dre.py
 
 Gera DRE (Demonstracao do Resultado do Exercicio) em Excel com 3 abas:
 **DRE mensal**, **Detalhamento Receitas**, **Detalhamento Despesas**.
@@ -117,22 +134,22 @@ Categoriza cada linha de despesa pela **conta analitica** (prioritario) ou pela
 **conta do plano de contas contabil** (fallback). A aba de detalhamento mostra
 as duas colunas para auditoria.
 
+**Prefira o CLI** — a tool MCP `gerar-DRE` pode sofrer timeout em anos com muitas faturas.
+
+```bash
+# CLI (sem timeout, recomendado)
+python reports/dre.py 2026
+python reports/dre.py 2026 --output /tmp/dre_2026.xlsx
+python reports/dre.py 2026 --mapeamento data/mapeamento.json
 ```
-# Uso basico — sem mapeamento, tudo vai para "Software / SaaS / Infraestrutura"
-gerar_dre(ano=2025)
 
-# Com mapeamento por termos de conta analitica ou contabil
-gerar_dre(
-  ano=2025,
-  mapeamento_categorias={
-    "Pessoal / Servicos Profissionais": ["Pessoal", "RH", "Honorarios"],
-    "Terceirizacao / Subcontratacao": ["Subcontratacao", "Terceiros"],
-    "Impostos e Taxas": ["SEFAZ", "ISS", "Simples", "INSS"]
-  }
-)
-
-# Salvar em caminho especifico
-gerar_dre(ano=2025, output_path="/tmp/dre_2025.xlsx")
+```json
+// Exemplo data/mapeamento.json
+{
+  "Pessoal / Servicos Profissionais": ["Pessoal", "RH", "Honorarios"],
+  "Terceirizacao / Subcontratacao": ["Subcontratacao", "Terceiros"],
+  "Impostos e Taxas": ["SEFAZ", "ISS", "Simples", "INSS"]
+}
 ```
 
 **Logica de categorizacao** (por linha de fatura):
