@@ -9,7 +9,7 @@ Tools especializadas: listar_projetos, listar_tarefas, criar_tarefa, mover_taref
     lancar_horas, resumo_financeiro, pipeline_crm, resolver_nome.
 Tools de CRM/leads: leads_pendentes_qualificacao, qualificar_lead.
 Tools de WhatsApp: listar_templates_whatsapp, preview_whatsapp, enviar_whatsapp.
-Tools de Relatorios: gerar_dre.
+Tools de Relatorios: gerar_demonstrativos_financeiros (DRE + DFC em Excel).
 
 """
 
@@ -1057,55 +1057,91 @@ def preview_whatsapp(
 # ─── Relatorios ──────────────────────────────────────────────────────────────
 
 
-@mcp.tool(name="gerar-DRE")
-def gerar_dre(
+@mcp.tool(name="gerar-demonstrativos-financeiros")
+def gerar_demonstrativos_financeiros(
     ano: int,
     mapeamento_categorias: dict | None = None,
     output_path: str | None = None,
+    incluir_fluxo_caixa: bool = True,
+    slug_cliente: str | None = None,
 ) -> str:
-    """Gera DRE (Demonstracao do Resultado do Exercicio) em Excel para o ano especificado.
+    """Gera Demonstrativos Financeiros (DRE + DFC) em Excel para o ano especificado.
+
+    Produz planilha .xlsx com ate 6 abas:
+    - DRE {ano} Competencia (agregado por invoice_date)
+    - DRE {ano} Caixa (agregado por invoice_date_due)
+    - DFC {ano} — Demonstrativo do Fluxo de Caixa real por account.payment
+      (so quando houver config cash_flow.credit_cards no clients/<slug>.yaml)
+    - Detalhamento Receitas, Detalhamento Despesas
+    - Detalhamento Fluxo de Caixa (so com DFC)
 
     Busca faturas de venda (receita) e linhas de compra (despesas) no Odoo.
     Categoriza cada linha de despesa pela conta analitica (prioritario) ou pela
-    conta do plano de contas contabil (fallback). Gera planilha .xlsx com 3 abas:
-    DRE mensal com formulas, detalhamento de receitas e detalhamento de despesas.
+    conta do plano de contas contabil (fallback).
 
-    Categorias de despesa disponíveis:
+    Para o DFC, le pagamentos reais de account.payment e trata cartoes de
+    credito de forma especial: cada compra em diario de cartao e diferida
+    para a data de vencimento da fatura (calculada a partir de closing_day
+    e due_day do YAML do cliente).
+
+    Categorias de despesa disponiveis:
     - "Pessoal / Servicos Profissionais"
     - "Terceirizacao / Subcontratacao"
     - "Impostos e Taxas"
     - "Software / SaaS / Infraestrutura" (default para nao mapeados)
 
     Args:
-        ano: Ano fiscal (ex: 2025).
-        mapeamento_categorias: {categoria: ["termo analitico ou contabil", ...]} para classificar.
-                               Prioridade: nome da conta analitica; fallback: nome da conta contabil.
-                               Nao obrigatorio — linhas nao mapeadas vao para
-                               "Software / SaaS / Infraestrutura".
-                               Exemplo: {"Pessoal / Servicos Profissionais": ["Pessoal", "RH"],
-                                         "Impostos e Taxas": ["SEFAZ", "ISS", "Simples"]}
-        output_path: Caminho do arquivo .xlsx a gerar. Default: "reports/dre_{ano}.xlsx".
+        ano: Ano fiscal (ex: 2026).
+        mapeamento_categorias: {categoria: ["termo analitico ou contabil", ...]}
+                               para classificar despesas.
+        output_path: Caminho do .xlsx. Default:
+                     "reports/demonstrativos_financeiros_{ano}.xlsx".
+        incluir_fluxo_caixa: Se False, nao gera aba DFC mesmo com config
+                             disponivel.
+        slug_cliente: Slug do cliente em clients/<slug>.yaml para carregar
+                      a config cash_flow. Default: env ODOO_CLIENT.
 
-    Returns: JSON com caminho do arquivo, resumo financeiro e linhas processadas.
+    Returns: JSON com caminho do arquivo, resumo financeiro, resumo DFC e
+             linhas processadas.
     """
     import os
-    from reports.dre import buscar_dados_dre, gerar_excel_dre
+    from reports.dre import buscar_dados_dre, gerar_excel_demonstrativos
+    from reports.fluxo_caixa import buscar_dados_fluxo_caixa, load_cash_flow_config
 
     odoo = get_odoo()
     mapeamento = mapeamento_categorias or {}
 
     if output_path is None:
         output_path = os.path.join(
-            os.path.dirname(os.path.abspath(__file__)), "reports", f"dre_{ano}.xlsx"
+            os.path.dirname(os.path.abspath(__file__)),
+            "reports",
+            f"demonstrativos_financeiros_{ano}.xlsx",
         )
 
     dados = buscar_dados_dre(odoo, ano, mapeamento)
-    path = gerar_excel_dre(ano=ano, output_path=output_path, **{k: dados[k] for k in dados if k != "hoje"}, hoje=dados["hoje"])
+
+    dados_fc = None
+    dfc_status = "pulado"
+    if incluir_fluxo_caixa:
+        cf_cfg = load_cash_flow_config(slug_cliente)
+        if cf_cfg.get("credit_cards"):
+            try:
+                dados_fc = buscar_dados_fluxo_caixa(odoo, ano, cf_cfg)
+                dfc_status = "gerado"
+            except Exception as e:  # noqa: BLE001
+                dfc_status = f"erro: {e}"
+
+    path = gerar_excel_demonstrativos(
+        ano=ano, output_path=output_path,
+        **{k: dados[k] for k in dados if k != "hoje"},
+        hoje=dados["hoje"],
+        dados_fluxo_caixa=dados_fc,
+    )
 
     total_receita = sum(dados["receita"].values())
     total_despesa = sum(sum(v.values()) for v in dados["despesa"].values())
 
-    return json.dumps({
+    resposta = {
         "arquivo": path,
         "ano": ano,
         "empresa": dados["empresa"],
@@ -1115,7 +1151,35 @@ def gerar_dre(
         "receita_bruta_total": round(total_receita, 2),
         "despesas_total": round(total_despesa, 2),
         "resultado_liquido": round(total_receita - total_despesa, 2),
-    }, default=serialize, ensure_ascii=False)
+        "dfc_status": dfc_status,
+    }
+
+    if dados_fc is not None:
+        total_entradas = sum(dados_fc["entradas_operacionais"].values())
+        total_saidas_op = sum(dados_fc["saidas_operacionais"].values())
+        total_cartao = sum(
+            sum(info["por_mes"].values())
+            for info in dados_fc["saidas_cartao_por_card"].values()
+        )
+        total_ajuste = sum(dados_fc["ajuste_cartao_ano_anterior"].values())
+        total_prox_ano = sum(
+            info["proximo_ano"]
+            for info in dados_fc["saidas_cartao_por_card"].values()
+        )
+        fluxo_liquido = total_entradas - (total_saidas_op + total_cartao + total_ajuste)
+        resposta["dfc"] = {
+            "pagamentos_processados": dados_fc["total_pagamentos_processados"],
+            "saldo_inicial": round(dados_fc["saldo_inicial"], 2),
+            "total_entradas": round(total_entradas, 2),
+            "total_saidas_operacionais": round(total_saidas_op, 2),
+            "total_cartao_diferido": round(total_cartao, 2),
+            "ajuste_ano_anterior": round(total_ajuste, 2),
+            "fluxo_liquido": round(fluxo_liquido, 2),
+            "saldo_final": round(dados_fc["saldo_inicial"] + fluxo_liquido, 2),
+            "cartao_diferido_proximo_ano": round(total_prox_ano, 2),
+        }
+
+    return json.dumps(resposta, default=serialize, ensure_ascii=False)
 
 
 # ─── Entrypoint ──────────────────────────────────────────────────────────────

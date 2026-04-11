@@ -26,6 +26,13 @@ activity_types:
 whatsapp:
   template_abordagem_leads: null
 
+# Demonstrativo do Fluxo de Caixa (DFC)
+# Preencha credit_cards com os diarios (account.journal) de cartao para
+# habilitar a aba DFC no arquivo de Demonstrativos Financeiros.
+cash_flow:
+  saldo_inicial_por_ano: {}
+  credit_cards: []
+
 # Configuracoes de CRM
 crm:
   stage_novos: "Novos"

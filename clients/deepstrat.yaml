@@ -36,6 +36,35 @@ whatsapp:
   # ID do template de abordagem de leads (null = desabilita envio automatico)
   template_abordagem_leads: 17
 
+# Demonstrativo do Fluxo de Caixa (DFC)
+#
+# Define como o gerador de Demonstrativos Financeiros deve interpretar
+# pagamentos e cartoes de credito ao montar a aba de fluxo de caixa.
+#
+# - saldo_inicial_por_ano: saldo de caixa no primeiro dia de cada ano
+#   fiscal (informativo). Default 0.0 quando ausente.
+# - credit_cards: lista de diarios (account.journal) que representam
+#   cartao de credito. Para cada cartao informe:
+#     * id (preferido, deterministico) OU name (substring do account.journal.name)
+#     * closing_day: dia do mes em que a fatura fecha
+#     * due_day: dia do mes seguinte em que a fatura vence
+#   Compras ate closing_day entram na fatura desse mes e sao pagas no
+#   due_day do mes seguinte. Compras apos closing_day entram na fatura
+#   do mes seguinte, pagas no due_day do mes subsequente.
+#
+# Se a chave cash_flow estiver ausente ou sem credit_cards, a aba DFC
+# nao e gerada (o arquivo Excel sai apenas com as abas de DRE).
+cash_flow:
+  saldo_inicial_por_ano:
+    2026: 0.00
+  credit_cards: []
+  # Exemplo:
+  # credit_cards:
+  #   - name: "Cartao Itau Black"  # substring do account.journal.name
+  #     id: null                    # opcional: se informado, prevalece sobre name
+  #     closing_day: 25
+  #     due_day: 5
+
 # Configuracoes de CRM
 crm:
   stage_novos: "Novos"   # Nome exato da etapa de leads novos nao qualificados

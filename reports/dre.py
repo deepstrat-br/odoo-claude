@@ -1,20 +1,27 @@
 """
-Gerador de DRE (Demonstracao do Resultado do Exercicio) em Excel (.xlsx).
+Gerador de Demonstrativos Financeiros (DRE + DFC) em Excel (.xlsx).
 
-Produz planilha profissional com 3 abas:
-- "DRE {ano}": demonstrativo mensal com formulas Excel reais
-- "Detalhamento Receitas": todas as faturas de venda por mes
-- "Detalhamento Despesas": todas as faturas de compra categorizadas
+Produz planilha profissional com ate 6 abas:
+- "DRE {ano} — Competencia": DRE mensal por invoice_date
+- "DRE {ano} — Caixa": DRE mensal reagrupado por invoice_date_due
+- "DFC {ano}": Demonstrativo do Fluxo de Caixa por account.payment
+  (gerado quando clients/<slug>.yaml tem cash_flow.credit_cards)
+- "Detalhamento Receitas": todas as faturas de venda
+- "Detalhamento Despesas": linhas de compra categorizadas
+- "Detalhamento Fluxo de Caixa": row-by-row dos pagamentos (so com DFC)
 
 Agnostico de empresa — nome da empresa e mapeamento de fornecedores para
-categorias de despesa sao recebidos como parametros.
+categorias de despesa sao recebidos como parametros. Configuracao de
+cartao de credito do DFC vem de clients/<slug>.yaml (chave cash_flow).
 
-Moeda: todos os valores na moeda da empresa (amount_total_signed).
-Faturas em moedas estrangeiras sao convertidas pelo Odoo pela taxa do dia.
+Moeda: todos os valores na moeda da empresa (amount_total_signed para DRE
+e amount_company_currency_signed para DFC). Faturas em moedas estrangeiras
+sao convertidas pelo Odoo pela taxa do dia.
 
 Uso CLI:
     python reports/dre.py 2026
-    python reports/dre.py 2026 --output /tmp/dre_2026.xlsx
+    python reports/dre.py 2026 --slug deepstrat
+    python reports/dre.py 2026 --output /tmp/demonstrativos_2026.xlsx
     python reports/dre.py 2026 --mapeamento data/mapeamento.json
 """
 
@@ -155,19 +162,27 @@ def obs_from_states(states: set) -> str:
     return ""
 
 
-def gerar_excel_dre(*, ano, hoje, empresa, moeda,
-                    receita, imposto, despesa,
-                    receita_obs, imposto_obs, despesa_obs,
-                    receita_caixa, imposto_caixa, despesa_caixa,
-                    receita_caixa_obs, imposto_caixa_obs, despesa_caixa_obs,
-                    vendas, linhas_compra, output_path):
-    """Gera o arquivo Excel completo do DRE e salva em output_path.
+def gerar_excel_demonstrativos(*, ano, hoje, empresa, moeda,
+                               receita, imposto, despesa,
+                               receita_obs, imposto_obs, despesa_obs,
+                               receita_caixa, imposto_caixa, despesa_caixa,
+                               receita_caixa_obs, imposto_caixa_obs, despesa_caixa_obs,
+                               vendas, linhas_compra, output_path,
+                               dados_fluxo_caixa=None):
+    """Gera o arquivo Excel de Demonstrativos Financeiros e salva em output_path.
 
-    Produz 4 abas:
+    Produz entre 4 e 6 abas (dependendo de dados_fluxo_caixa):
     - DRE {ano} — Competencia: agregado por invoice_date
     - DRE {ano} — Caixa: agregado por invoice_date_due
+    - DFC {ano}: fluxo de caixa real por account.payment (opcional)
     - Detalhamento Receitas: faturas de venda com ambas as datas
     - Detalhamento Despesas: linhas de compra com ambas as datas
+    - Detalhamento Fluxo de Caixa: row-by-row dos pagamentos (opcional)
+
+    Args:
+        dados_fluxo_caixa: dict retornado por
+            reports.fluxo_caixa.buscar_dados_fluxo_caixa(). Quando None,
+            as abas DFC e de Detalhamento Fluxo de Caixa nao sao geradas.
 
     Returns:
         Caminho do arquivo salvo (str).
@@ -184,10 +199,29 @@ def gerar_excel_dre(*, ano, hoje, empresa, moeda,
                      receita_caixa, imposto_caixa, despesa_caixa,
                      receita_caixa_obs, imposto_caixa_obs, despesa_caixa_obs,
                      sufixo="Caixa", regime_desc="data de vencimento (invoice_date_due)")
+
+    if dados_fluxo_caixa is not None:
+        # Import local para evitar ciclo: fluxo_caixa.py importa simbolos daqui.
+        from reports.fluxo_caixa import (  # noqa: PLC0415
+            _build_fluxo_caixa_sheet,
+            _build_detalhe_fluxo_sheet,
+        )
+        ws_dfc = wb.create_sheet(title=f"DFC {ano}")
+        _build_fluxo_caixa_sheet(ws_dfc, ano, dados_fluxo_caixa, moeda, empresa)
+
     _build_receitas_sheet(wb, ano, vendas, moeda)
     _build_despesas_sheet(wb, ano, linhas_compra, moeda)
+
+    if dados_fluxo_caixa is not None:
+        from reports.fluxo_caixa import _build_detalhe_fluxo_sheet  # noqa: PLC0415
+        _build_detalhe_fluxo_sheet(wb, ano, dados_fluxo_caixa, moeda)
+
     wb.save(output_path)
     return output_path
+
+
+# Alias retrocompatibilidade — codigo antigo que importa gerar_excel_dre continua funcionando.
+gerar_excel_dre = gerar_excel_demonstrativos
 
 
 # ─── Helpers internos ────────────────────────────────────────────────────────
@@ -642,10 +676,22 @@ def buscar_dados_dre(odoo, ano: int, mapeamento: dict, log=None) -> dict:
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Gera DRE em Excel a partir do Odoo")
+    parser = argparse.ArgumentParser(
+        description="Gera Demonstrativos Financeiros (DRE + DFC) em Excel a partir do Odoo"
+    )
     parser.add_argument("ano", type=int, help="Ano fiscal (ex: 2026)")
-    parser.add_argument("--output", "-o", help="Caminho do .xlsx (default: reports/dre_{ano}.xlsx)")
+    parser.add_argument(
+        "--output", "-o",
+        help="Caminho do .xlsx (default: reports/demonstrativos_financeiros_{ano}.xlsx)",
+    )
     parser.add_argument("--mapeamento", "-m", help="JSON com mapeamento de categorias")
+    parser.add_argument(
+        "--slug", "-s",
+        help=(
+            "Slug do cliente em clients/<slug>.yaml para carregar config do DFC. "
+            "Se ausente, usa env ODOO_CLIENT; sem qualquer um, a aba DFC nao e gerada."
+        ),
+    )
     args = parser.parse_args()
 
     mapeamento = {}
@@ -655,24 +701,45 @@ def main():
 
     output_path = args.output or os.path.join(
         os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-        "reports", f"dre_{args.ano}.xlsx",
+        "reports", f"demonstrativos_financeiros_{args.ano}.xlsx",
     )
 
-    print(f"\n=== DRE {args.ano} ===")
+    print(f"\n=== Demonstrativos Financeiros {args.ano} ===")
     print(f"Output: {output_path}\n")
 
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     from odoo import OdooClient  # noqa: PLC0415
+    from reports.fluxo_caixa import (  # noqa: PLC0415
+        buscar_dados_fluxo_caixa,
+        load_cash_flow_config,
+    )
 
     odoo = OdooClient()
     print(f"Conectado ao Odoo (uid={odoo.uid})", flush=True)
 
     dados = buscar_dados_dre(odoo, args.ano, mapeamento, log=lambda m: print(m, flush=True))
 
-    print("Gerando planilha Excel...", flush=True)
-    path = gerar_excel_dre(
-        ano=args.ano, output_path=output_path, **{k: dados[k] for k in dados if k != "hoje"},
+    # DFC: so se houver config com credit_cards
+    dados_fc = None
+    cf_cfg = load_cash_flow_config(args.slug)
+    if cf_cfg.get("credit_cards"):
+        print(f"\nConfig cash_flow carregada: {len(cf_cfg['credit_cards'])} cartao(oes)", flush=True)
+        try:
+            dados_fc = buscar_dados_fluxo_caixa(
+                odoo, args.ano, cf_cfg,
+                log=lambda m: print(m, flush=True),
+            )
+        except Exception as e:  # noqa: BLE001
+            print(f"[aviso] DFC nao gerado: {e}", flush=True)
+    else:
+        print("\nSem config cash_flow.credit_cards — aba DFC pulada.", flush=True)
+
+    print("\nGerando planilha Excel...", flush=True)
+    path = gerar_excel_demonstrativos(
+        ano=args.ano, output_path=output_path,
+        **{k: dados[k] for k in dados if k != "hoje"},
         hoje=dados["hoje"],
+        dados_fluxo_caixa=dados_fc,
     )
 
     receita_total = sum(dados["receita"].values())
@@ -686,6 +753,35 @@ def main():
     print(f"Receita bruta:     {moeda} {receita_total:,.2f}")
     print(f"Despesas:          {moeda} {despesa_total:,.2f}")
     print(f"Resultado liquido: {moeda} {receita_total - despesa_total:,.2f}")
+
+    if dados_fc is not None:
+        total_entradas = sum(dados_fc["entradas_operacionais"].values())
+        total_saidas_op = sum(dados_fc["saidas_operacionais"].values())
+        total_cartao = sum(
+            sum(info["por_mes"].values())
+            for info in dados_fc["saidas_cartao_por_card"].values()
+        )
+        total_ajuste = sum(dados_fc["ajuste_cartao_ano_anterior"].values())
+        total_prox_ano = sum(
+            info["proximo_ano"]
+            for info in dados_fc["saidas_cartao_por_card"].values()
+        )
+        fluxo_liquido = total_entradas - (total_saidas_op + total_cartao + total_ajuste)
+        saldo_final = dados_fc["saldo_inicial"] + fluxo_liquido
+        print(f"\n--- DFC {args.ano} ---")
+        print(f"Pagamentos:        {dados_fc['total_pagamentos_processados']}")
+        print(f"Saldo inicial:     {moeda} {dados_fc['saldo_inicial']:,.2f}")
+        print(f"Entradas:          {moeda} {total_entradas:,.2f}")
+        print(f"Saidas (operac):   {moeda} {total_saidas_op:,.2f}")
+        print(f"Saidas (cartao):   {moeda} {total_cartao:,.2f}")
+        print(f"Ajuste ano anter.: {moeda} {total_ajuste:,.2f}")
+        print(f"Fluxo liquido:     {moeda} {fluxo_liquido:,.2f}")
+        print(f"Saldo final:       {moeda} {saldo_final:,.2f}")
+        if total_prox_ano > 0:
+            print(
+                f"Cartao diferido para {args.ano + 1}: "
+                f"{moeda} {total_prox_ano:,.2f}"
+            )
 
 
 if __name__ == "__main__":

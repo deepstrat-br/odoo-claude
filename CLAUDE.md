@@ -82,7 +82,8 @@ odoo-deepstrat/
 ├── integrations/
 │   └── clockify.py                  # Clockify <-> account.analytic.line
 ├── reports/
-│   └── dre.py                       # gerador de DRE em Excel (.xlsx) + CLI
+│   ├── dre.py                       # gerador de Demonstrativos Financeiros (DRE) em Excel + CLI
+│   └── fluxo_caixa.py               # gerador da aba DFC (Fluxo de Caixa) — consumido por dre.py
 ├── data/                            # entradas temporarias (nao versionadas)
 │   ├── tasks/
 │   └── purchase/
@@ -125,21 +126,27 @@ python integrations/clockify.py comparar 2026-04-01 2026-04-30
 python integrations/clockify.py comparar-rti 2026-04-01 2026-04-30
 ```
 
-## DRE — reports/dre.py
+## Demonstrativos Financeiros — reports/dre.py
 
-Gera DRE (Demonstracao do Resultado do Exercicio) em Excel com 3 abas:
-**DRE mensal**, **Detalhamento Receitas**, **Detalhamento Despesas**.
+Gera **Demonstrativos Financeiros (DRE + DFC)** em Excel com ate 6 abas:
+- **DRE {ano} — Competencia** (por `invoice_date`)
+- **DRE {ano} — Caixa** (por `invoice_date_due`)
+- **DFC {ano}** — Demonstrativo do Fluxo de Caixa real por `account.payment`
+  (so quando `clients/<slug>.yaml` tem `cash_flow.credit_cards`)
+- **Detalhamento Receitas**, **Detalhamento Despesas**
+- **Detalhamento Fluxo de Caixa** (so com DFC)
 
 Categoriza cada linha de despesa pela **conta analitica** (prioritario) ou pela
 **conta do plano de contas contabil** (fallback). A aba de detalhamento mostra
 as duas colunas para auditoria.
 
-**Prefira o CLI** — a tool MCP `gerar-DRE` pode sofrer timeout em anos com muitas faturas.
+**Prefira o CLI** — a tool MCP `gerar-demonstrativos-financeiros` pode sofrer timeout em anos com muitas faturas.
 
 ```bash
 # CLI (sem timeout, recomendado)
 python reports/dre.py 2026
-python reports/dre.py 2026 --output /tmp/dre_2026.xlsx
+python reports/dre.py 2026 --slug deepstrat              # habilita DFC via YAML
+python reports/dre.py 2026 --output /tmp/demonstrativos_2026.xlsx
 python reports/dre.py 2026 --mapeamento data/mapeamento.json
 ```
 
@@ -167,12 +174,48 @@ python reports/dre.py 2026 --mapeamento data/mapeamento.json
 | `Impostos e Taxas` | SEFAZ, Prefeitura, guias |
 | `Software / SaaS / Infraestrutura` | Default para nao mapeados |
 
-**Regras:**
+**Regras (DRE):**
 - Inclui faturas `posted` (Efetivo) e `draft` (Provisorio) — coluna Obs indica o status
 - Granularidade por linha de fatura, nao por cabecalho
 - Faturas em moeda estrangeira sao convertidas pelo Odoo pela taxa da data da fatura
-- Saida padrao: `reports/dre_{ano}.xlsx` na raiz do projeto
-- Dependencia: `pip install openpyxl`
+
+### Fluxo de Caixa (DFC) — `reports/fluxo_caixa.py`
+
+O DFC usa `account.payment` (estados `posted`/`paid`) em vez de
+`account.move` — ou seja, olha o que **efetivamente saiu/entrou** do caixa
+ou banco. Cada `journal_id` listado em `cash_flow.credit_cards` e tratado
+como cartao de credito: suas compras sao deferidas para a data de
+vencimento da fatura usando `closing_day`/`due_day`.
+
+**Regra do cartao:**
+- Compra ate `closing_day` → entra na fatura que fecha neste mes, paga no
+  `due_day` do mes seguinte.
+- Compra apos `closing_day` → entra na fatura do proximo mes, paga no
+  `due_day` do mes subsequente.
+- Compras de nov/dez do ano anterior cujo vencimento cai no ano atual
+  aparecem na linha **"Ajuste: faturas de cartao do ano anterior"**.
+- Compras do ano atual cujo vencimento cai no ano seguinte vao para o
+  rodape **"Faturas de cartao diferidas para {ano+1}"** (nao entram nas
+  colunas mensais).
+
+**Config no `clients/<slug>.yaml`:**
+
+```yaml
+cash_flow:
+  saldo_inicial_por_ano:
+    2026: 0.00
+  credit_cards:
+    - name: "Cartao Itau Black"    # substring do account.journal.name
+      id: null                      # opcional: prevalece sobre name
+      closing_day: 25
+      due_day: 5
+```
+
+Sem `cash_flow.credit_cards`, a aba DFC nao e gerada (arquivo sai so com as abas de DRE).
+
+**Outros detalhes:**
+- Saida padrao: `reports/demonstrativos_financeiros_{ano}.xlsx` na raiz do projeto
+- Dependencias: `pip install openpyxl pyyaml`
 
 ---
 
