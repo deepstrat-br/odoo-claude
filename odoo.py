@@ -7,13 +7,13 @@ e load_client_config (configuracao multi-cliente via YAML).
 
 Uso como biblioteca:
     from odoo import OdooClient, Resolver, load_client_config
-    config = load_client_config("deepstrat")
+    config = load_client_config("acme")
     odoo = OdooClient(**config["odoo"])
     r = Resolver(odoo)
 
 Uso como CLI:
     python odoo.py projetos
-    python odoo.py --client deepstrat projetos
+    python odoo.py --client acme projetos
     python odoo.py tarefas <id_ou_nome>
     python odoo.py busca <modelo> <campos> [filtro] [limite]
     python odoo.py criar-tarefa <proj_id> "Nome" [horas]

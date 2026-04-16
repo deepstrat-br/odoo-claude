@@ -10,7 +10,7 @@ Cada cliente tem um arquivo YAML em `clients/<slug>.yaml` com URL, DB, IDs de at
 templates WhatsApp e config de CRM. Selecione o cliente ativo via:
 
 ```bash
-export ODOO_CLIENT=deepstrat    # ou --client deepstrat no CLI
+export ODOO_CLIENT=acme    # ou --client acme no CLI
 ```
 
 Credenciais (login/key) ficam no `.env` ou variaveis de ambiente — nunca no YAML commitado.
@@ -49,7 +49,7 @@ r.project("Meu Projeto")              # project.project -> int
 r.stage("Backlog")                    # project.task.type -> int
 r.milestone(project_id, "Marco 1")   # project.milestone -> int
 r.tags(["CRM", "Vendas"])            # project.tags -> [(6, 0, [ids])]
-r.users(["user@deepstrat.com.br"])  # res.users -> [int]
+r.users(["user@empresa.com"])        # res.users -> [int]
 r.partner("Nome do Cliente")         # res.partner -> int
 r.product("Service on Timesheets")   # product.product -> int
 r.uom("Hours")                       # uom.uom -> int
@@ -71,8 +71,8 @@ Para operacoes pontuais, Claude gera Python usando `OdooClient` diretamente, sem
 odoo-claude/
 ├── odoo.py                          # cliente XML-RPC + Resolver + load_client_config (lib core)
 ├── mcp_server.py                    # servidor MCP (Model Context Protocol)
-├── clients/                         # configs de clientes (YAML, versionados)
-│   └── deepstrat.yaml              # config Deepstrat: IDs, templates, CRM
+├── clients/                         # configs por cliente (YAML, nao versionados)
+│   └── <slug>.yaml                  # IDs, templates, config de CRM
 ├── scripts/
 │   ├── project/
 │   │   └── import_tasks.py          # criacao em lote de tarefas via YAML
@@ -80,13 +80,9 @@ odoo-claude/
 │       └── import_po.py             # criacao de PO + linhas via YAML
 ├── integrations/
 │   └── clockify.py                  # Clockify <-> account.analytic.line
-├── data/                            # entradas temporarias (nao versionadas)
-│   ├── tasks/
-│   └── purchase/
-└── docs/
-    ├── projetos-timesheets.md
-    ├── clockify.md
-    └── qualificacao-leads.md
+└── data/                            # entradas temporarias (nao versionadas)
+    ├── tasks/
+    └── purchase/
 ```
 
 ---
@@ -95,7 +91,7 @@ odoo-claude/
 
 ```bash
 python odoo.py projetos                                          # usa ODOO_CLIENT env
-python odoo.py --client deepstrat projetos                       # especifica cliente
+python odoo.py --client acme projetos                            # especifica cliente
 python odoo.py tarefas <id_ou_nome>
 python odoo.py financeiro
 python odoo.py busca res.partner "name,email,city" "customer_rank>0" 10
@@ -121,7 +117,6 @@ python scripts/purchase/import_po.py data/purchase/contrato.yaml --dry-run
 ```bash
 python integrations/clockify.py entradas 2026-04-01 2026-04-30
 python integrations/clockify.py comparar 2026-04-01 2026-04-30
-python integrations/clockify.py comparar-rti 2026-04-01 2026-04-30
 ```
 
 ---
@@ -173,7 +168,7 @@ crm:
     Texto da metodologia de qualificacao...
 ```
 
-**Para adicionar um novo cliente:** copiar `clients/deepstrat.yaml`, ajustar slug/nome/IDs, configurar credenciais no `.env`.
+**Para adicionar um novo cliente:** criar `clients/<slug>.yaml` seguindo o template acima, ajustar slug/nome/IDs, configurar credenciais no `.env`.
 
 **Selecionar cliente ativo:**
 - Env var: `ODOO_CLIENT=slug`
@@ -289,18 +284,6 @@ crm:
 
 ---
 
-## Documentacao detalhada
-
-- [Projetos & Timesheets](docs/projetos-timesheets.md) — fluxo de etapas, convencoes de timesheet, metricas de saude
-- [Clockify](docs/clockify.md) — integracao Clockify x Odoo, mapeamento de projetos/usuarios, fechamento mensal
-- [Qualificacao de Leads](docs/qualificacao-leads.md) — metodologia de enriquecimento e priorizacao de leads CRM
-
-Ler `projetos-timesheets.md` antes de criar/mover tarefas, lancar horas ou avaliar saude de projeto.
-Ler `clockify.md` antes de comparar horas ou fechar o mes no projeto RTI.
-Ler `qualificacao-leads.md` antes de qualificar leads ou usar as tools `leads_pendentes_qualificacao` / `qualificar_lead`.
-
----
-
 ## Configuracao local — CLAUDE.local.md
 
 Informacoes pessoais (login, UID, IDs de referencia) **nao devem** estar neste arquivo.
@@ -316,7 +299,7 @@ Exemplo de conteudo para `CLAUDE.local.md`:
 ## Conexao
 | Param | Valor |
 |---|---|
-| Login | `seu-email@deepstrat.com.br` |
+| Login | `seu-email@empresa.com` |
 | UID | `2` |
 
 ## IDs de referencia

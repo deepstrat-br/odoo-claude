@@ -137,7 +137,7 @@ def trocar_cliente(slug: str) -> str:
     Use listar_clientes() para ver os slugs disponiveis.
 
     Args:
-        slug: Identificador do cliente (ex: 'deepstrat'). Corresponde ao arquivo clients/<slug>.yaml.
+        slug: Identificador do cliente (ex: 'acme'). Corresponde ao arquivo clients/<slug>.yaml.
 
     Returns JSON {status, cliente, nome, url}.
     """
