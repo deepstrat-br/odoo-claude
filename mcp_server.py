@@ -71,7 +71,10 @@ def get_odoo():
     global _odoo
     if _odoo is None:
         c = get_config()["odoo"]
-        _odoo = OdooClient(url=c["url"], db=c["db"], login=c["login"], key=c["key"])
+        _odoo = OdooClient(
+            url=c["url"], db=c["db"], login=c["login"], key=c["key"],
+            lang=c.get("lang", "pt_BR"),
+        )
     return _odoo
 
 
@@ -181,6 +184,7 @@ def buscar(
     campos: list[str] | None = None,
     limite: int = 20,
     ordem: str | None = None,
+    lang: str | None = None,
 ) -> str:
     """Busca multiplos registros no Odoo com filtros. Use ler_registro() para buscar um unico ID.
 
@@ -197,14 +201,18 @@ def buscar(
                 Ex: ["id", "name", "email_from", "stage_id"].
         limite: Maximo de registros (default 20; use ate 200 para lotes).
         ordem: Ordenacao SQL. Ex: 'name asc', 'create_date desc'.
+        lang: Codigo de idioma para ler campos traduziveis (ex: 'en_US', 'es_ES').
+              Default usa o lang configurado no YAML do cliente (pt_BR).
     """
     odoo = get_odoo()
+    context = {"lang": lang} if lang else None
     records = odoo.search(
         modelo,
         filters=filtros or [],
         fields=campos,
         limit=limite,
         order=ordem,
+        context=context,
     )
     return json.dumps(records, default=serialize, ensure_ascii=False)
 
@@ -225,7 +233,9 @@ def contar(modelo: str, filtros: list | None = None) -> int:
 
 
 @mcp.tool()
-def ler_registro(modelo: str, id: int, campos: list[str] | None = None) -> str:
+def ler_registro(
+    modelo: str, id: int, campos: list[str] | None = None, lang: str | None = None
+) -> str:
     """Le um unico registro pelo ID. Mais eficiente que buscar() para registros individuais.
 
     Returns JSON do registro, ou {"erro": "..."} se nao encontrado.
@@ -234,15 +244,18 @@ def ler_registro(modelo: str, id: int, campos: list[str] | None = None) -> str:
         modelo: Modelo Odoo.
         id: ID do registro.
         campos: Campos a retornar. None = todos.
+        lang: Codigo de idioma para ler campos traduziveis (ex: 'en_US', 'es_ES').
+              Default usa o lang configurado no YAML do cliente (pt_BR).
     """
-    record = get_odoo().get(modelo, id, fields=campos)
+    context = {"lang": lang} if lang else None
+    record = get_odoo().get(modelo, id, fields=campos, context=context)
     if not record:
         return json.dumps({"erro": f"Registro {id} nao encontrado em {modelo}"})
     return json.dumps(record, default=serialize, ensure_ascii=False)
 
 
 @mcp.tool()
-def criar_registro(modelo: str, valores: dict) -> str:
+def criar_registro(modelo: str, valores: dict, lang: str | None = None) -> str:
     """Cria um novo registro no Odoo. Para tarefas de projeto, prefira criar_tarefa() (mais ergonomico).
 
     Returns JSON {"id": <novo_id>, "modelo": ..., "status": "criado"}.
@@ -256,14 +269,22 @@ def criar_registro(modelo: str, valores: dict) -> str:
                  Campos many2one aceitam ID inteiro (ex: "project_id": 9).
                  Many2many usam comandos Odoo: [(6, 0, [ids])] para substituir lista.
                  Ex: {"name": "Nova Tarefa", "project_id": 9, "user_ids": [2]}.
+        lang: Codigo de idioma do registro (ex: 'en_US' para criar o valor ja em ingles).
+              Default usa o lang configurado no YAML do cliente (pt_BR).
     """
-    record_id = get_odoo().create(modelo, valores)
+    context = {"lang": lang} if lang else None
+    record_id = get_odoo().create(modelo, valores, context=context)
     return json.dumps({"id": record_id, "modelo": modelo, "status": "criado"})
 
 
 @mcp.tool()
-def atualizar_registro(modelo: str, id: int, valores: dict) -> str:
+def atualizar_registro(
+    modelo: str, id: int, valores: dict, lang: str | None = None
+) -> str:
     """Atualiza campos de um registro existente no Odoo (update parcial).
+
+    Para atualizar campos traduziveis (name, description) em varios idiomas de uma vez,
+    use atualizar_traducoes() em vez desta tool.
 
     Returns JSON {"id": ..., "modelo": ..., "status": "atualizado"}.
 
@@ -272,9 +293,65 @@ def atualizar_registro(modelo: str, id: int, valores: dict) -> str:
         id: ID do registro.
         valores: Apenas os campos a modificar — nao precisa enviar todos os campos.
                  Ex: {"priority": "1"} para marcar como urgente.
+        lang: Codigo de idioma para escrever a traducao em um idioma especifico
+              (ex: 'en_US', 'es_ES'). Campos traduziveis (char/text com translate=True)
+              recebem a traducao daquele idioma sem alterar os outros.
+              Default usa o lang configurado no YAML do cliente (pt_BR).
     """
-    get_odoo().update(modelo, id, valores)
+    context = {"lang": lang} if lang else None
+    get_odoo().update(modelo, id, valores, context=context)
     return json.dumps({"id": id, "modelo": modelo, "status": "atualizado"})
+
+
+@mcp.tool()
+def atualizar_traducoes(modelo: str, id: int, traducoes: dict) -> str:
+    """Atualiza campos traduziveis de um registro em varios idiomas numa operacao.
+
+    Faz um write por idioma, cada um com context={'lang': <codigo>}. Apenas campos
+    traduziveis no Odoo (geralmente name, description, label) recebem a traducao;
+    campos nao-traduziveis serao sobrescritos com o mesmo valor em cada idioma
+    (evite coloca-los aqui).
+
+    Exemplo:
+        atualizar_traducoes(
+            "product.template", 42,
+            {
+                "pt_BR": {"name": "Cadeira de Escritorio"},
+                "en_US": {"name": "Office Chair"},
+                "es_ES": {"name": "Silla de Oficina"},
+            },
+        )
+
+    Returns JSON {"id": ..., "modelo": ..., "idiomas_atualizados": [...],
+                  "falhas": {lang: erro, ...}}.
+
+    Args:
+        modelo: Modelo Odoo.
+        id: ID do registro.
+        traducoes: Dict {codigo_idioma: {campo: valor, ...}}. Codigos Odoo padrao:
+                   'pt_BR', 'en_US', 'es_ES', 'fr_FR', 'de_DE', 'it_IT', etc.
+    """
+    if not traducoes:
+        return json.dumps({"erro": "traducoes vazio — nada a atualizar"}, ensure_ascii=False)
+
+    odoo = get_odoo()
+    atualizados = []
+    falhas = {}
+    for codigo, valores in traducoes.items():
+        if not valores:
+            continue
+        try:
+            odoo.update(modelo, id, valores, context={"lang": codigo})
+            atualizados.append(codigo)
+        except Exception as e:
+            falhas[codigo] = str(e)
+
+    return json.dumps({
+        "id": id,
+        "modelo": modelo,
+        "idiomas_atualizados": atualizados,
+        "falhas": falhas,
+    }, ensure_ascii=False)
 
 
 @mcp.tool()
