@@ -1,0 +1,171 @@
+# Configuracao do cliente: Deepstrat
+#
+# CREDENCIAIS: Deixe em branco aqui e use variaveis de ambiente,
+# ou preencha apenas em ambientes seguros (nunca commitar com key preenchida).
+#
+# Variaveis de ambiente usadas como fallback:
+#   ODOO_URL, ODOO_DB, ODOO_LOGIN, ODOO_KEY
+
+slug: deepstrat
+nome: Deepstrat
+moeda: BRL
+
+contexto:
+  descricao: "Consultoria especializada em implementacao e suporte de ERP Odoo no Brasil"
+  segmento: "Tecnologia / Consultoria"
+  modulos_ativos:
+    - Projetos
+    - Timesheets
+    - CRM
+    - Faturamento
+    - Compras
+    - WhatsApp
+
+odoo:
+  url: https://deepstrat.odoo.com
+  db: deepstrat
+  # Idioma injetado em context={'lang': ...} em todas as chamadas XML-RPC.
+  # Garante que campos traduziveis (name, description) sejam lidos/escritos
+  # em pt_BR por default, independente do idioma do usuario autenticado.
+  # Para escrever em outro idioma numa chamada especifica, use atualizar_traducoes().
+  lang: pt_BR
+
+# IDs de tipos de atividade (variam por instancia Odoo)
+# Para descobrir os seus: python odoo.py busca mail.activity.type "id,name"
+activity_types:
+  call: 2          # "Ligacao / Call"
+  todo: 4          # "To Do / Pendencia"
+
+# Integracao WhatsApp
+whatsapp:
+  # ID do template de abordagem de leads (null = desabilita envio automatico)
+  template_abordagem_leads: 17
+
+# Demonstrativo do Fluxo de Caixa (DFC)
+#
+# A presenca desta chave habilita a geracao das abas DFC no Excel.
+# O DFC le account.move.line das contas de banco/caixa, segue
+# origin_payment_id -> account.payment -> reconciled_bill_ids/invoice_ids
+# para chegar na fatura original e usa as contas analiticas/conta contabil
+# da fatura para classificar cada lancamento.
+#
+# saldo_inicial_por_ano: opcional. Se omitido, calculado automaticamente.
+cash_flow:
+  enabled: true
+  # saldo_inicial_por_ano:
+  #   2026: 0.00
+
+  # Override de classificacao das atividades DFC por conta contrapartida.
+  # Substrings case-insensitive. Se nao casar, a classificacao vem do
+  # mapa default (liability_payable/asset_receivable/expense -> Operacional,
+  # asset_fixed -> Investimento, equity -> Financiamento).
+  classificacao_contas:
+    financiamento:
+      codigos:
+        - "2.01.01.17.13"     # Dividends Payable - Current (pro-labore Deepstrat)
+      nomes:
+        - "Dividends Payable"
+        - "Retirada Socio"
+        - "Pro-labore"
+    investimento:
+      codigos: []
+      nomes:
+        - "Imobilizado"
+        - "Ativo Fixo"
+        - "Aquisicao de Ativos"
+
+# Mapeamento de termos -> categoria de despesa.
+# Usado tanto no DRE (categorizacao de linhas de bill) quanto no DFC
+# (sub-categorizacao de saidas dentro de cada atividade). A comparacao e
+# por substring case-insensitive, aplicada primeiro no nome da conta
+# analitica e depois no nome da conta contabil.
+categorias_despesa:
+  "Pessoal / Servi\u00e7os Profissionais":
+    - Freelancer
+    - Pessoal
+    - Honorarios
+    - Assistente Virtual
+    - Contabilidade
+    - Gottardi
+    - Monteiro
+    - Tavanielli
+    - Kogikoski
+    - Alessandra
+    - Nicholas
+    - Thiago
+    - Stefano
+    - Vagner
+  "Terceiriza\u00e7\u00e3o / Subcontrata\u00e7\u00e3o":
+    - Terceiriza
+    - Subcontrat
+    - Imaginera
+  "Projetos Especiais":
+    - Projeto Especial
+    - Expo Sebrae
+    - Rebranding
+  "Software / SaaS / Infraestrutura":
+    - Software
+    - SaaS
+    - Assinatura
+    - Infraestrutura
+    - DevOps
+    - Anthropic
+    - OpenRouter
+    - Claude
+    - Hostinger
+    - Perplexity
+    - AWS
+    - Google Workspace
+  "Marketing / Publicidade":
+    - Marketing
+    - Google Ads
+    - Ads
+    - Publicidade
+    - Propaganda
+    - Eventos
+    - Fotografia
+    - Materiais Promocionais
+    - Ag\u00eancia
+  "Impostos e Taxas":
+    - Imposto
+    - IOF
+    - INPI
+    - Taxas
+    - Fees
+    - Taxes
+    - SEFAZ
+    - DAS
+    - Simples
+    - INSS
+    - Prefeitura
+    - Fines
+  "Outras Despesas":
+    - Administrativo
+    - Alimenta\u00e7\u00e3o
+    - Outras
+
+# Estilo dos relatorios gerados para este cliente
+relatorio:
+  estilo: |
+    Profissional / McKinsey. Tipografia Calibri, paleta restrita baseada em navy
+    (#1B2A4A) com acentos em cinza neutro e warm gray. Espacamento generoso,
+    hierarquia visual exclusivamente por peso de fonte e cor de fundo — sem bordas
+    excessivas, sem excesso de preenchimento. Gridlines desligadas em todas as abas.
+    Valores negativos entre parenteses. Headers de secao com fundo navy e fonte
+    branca bold. Linhas de dados com zebra sutil (warm gray / branco alternado).
+    Resultado deve parecer um deliverable de consultoria estrategica de topo
+    (McKinsey, BCG, Bain) — limpo, executivo, sem poluicao visual.
+
+# Configuracoes de CRM
+crm:
+  stage_novos: "Novos"   # Nome exato da etapa de leads novos nao qualificados
+  metodologia: |
+    METODOLOGIA DE QUALIFICACAO:
+    1. Para cada lead, pesquise a empresa online (Google, Instagram, site, CNPJ).
+    2. Analise sinais: site proprio (+), email corporativo (+), presenca digital (+), email .edu.br (-), nome sem sentido (-), telefone incompleto (-).
+    3. Classifique: 3=empresa real confirmada com necessidade ERP, 2=provavelmente real mas sem confirmacao, 1=pouca info/micro, 0=spam/bot/academico.
+    4. Atualize: capitalizar nomes, preencher empresa, adicionar pesquisa na descricao, definir prioridade, adicionar website se encontrado.
+    5. Para leads prioridade 3: enviar WhatsApp de abordagem (auto) + criar atividade Call.
+       Para leads prioridade 2: criar atividade de revisao manual (To Do).
+    6. Titulo padrao: 'Lead Odoo: Nome do Contato — Empresa'.
+    Detalhes completos: docs/qualificacao-leads.md

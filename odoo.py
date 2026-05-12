@@ -88,6 +88,7 @@ def load_client_config(slug=None):
             "db": odoo_cfg.get("db") or os.environ.get(f"{prefix}_ODOO_DB") or ODOO_DB,
             "login": odoo_cfg.get("login") or os.environ.get(f"{prefix}_ODOO_LOGIN", ""),
             "key": odoo_cfg.get("key") or os.environ.get(f"{prefix}_ODOO_KEY", ""),
+            "lang": odoo_cfg.get("lang") or os.environ.get(f"{prefix}_ODOO_LANG") or "pt_BR",
         },
         "contexto": data.get("contexto", {}),
         "activity_types": data.get("activity_types", {}),
@@ -110,10 +111,11 @@ class OdooClient:
         uid: ID do usuario autenticado (int). Disponivel apos __init__.
     """
 
-    def __init__(self, url=None, db=None, login=None, key=None):
+    def __init__(self, url=None, db=None, login=None, key=None, lang="pt_BR"):
         if not any([url, db, login, key]):
             cfg = load_client_config()
             url, db, login, key = (cfg["odoo"][k] for k in ("url", "db", "login", "key"))
+            lang = cfg["odoo"].get("lang", lang)
         else:
             url = url or ODOO_URL
             db = db or ODOO_DB
@@ -125,19 +127,42 @@ class OdooClient:
 
         self._db = db
         self._key = key
+        self._default_context = {"lang": lang} if lang else {}
         common = xmlrpc.client.ServerProxy(f"{url}/xmlrpc/2/common")
         self.uid = common.authenticate(db, login, key, {})
         if not self.uid:
             raise ConnectionError("Falha na autenticacao. Verifique as credenciais.")
         self._models = xmlrpc.client.ServerProxy(f"{url}/xmlrpc/2/object")
 
-    def _call(self, model, method, args, kwargs=None):
-        """Chama execute_kw diretamente. Use para metodos nao cobertos pela API publica."""
+    def _merge_context(self, kwargs, context):
+        """Injeta o default_context em kwargs['context'], mesclado com override opcional.
+
+        Precedencia: context explicito > kwargs['context'] existente > self._default_context.
+        """
+        merged = dict(self._default_context)
+        existing = (kwargs or {}).get("context")
+        if existing:
+            merged.update(existing)
+        if context:
+            merged.update(context)
+        out = dict(kwargs or {})
+        if merged:
+            out["context"] = merged
+        return out
+
+    def _call(self, model, method, args, kwargs=None, context=None):
+        """Chama execute_kw diretamente. Use para metodos nao cobertos pela API publica.
+
+        Args:
+            context: dict opcional mesclado com o contexto default do cliente (lang).
+                     Ex: {"lang": "en_US"} para escrever em ingles numa chamada especifica.
+        """
+        kwargs = self._merge_context(kwargs, context)
         return self._models.execute_kw(
-            self._db, self.uid, self._key, model, method, args, kwargs or {}
+            self._db, self.uid, self._key, model, method, args, kwargs
         )
 
-    def search(self, model, filters=None, fields=None, limit=80, order=None):
+    def search(self, model, filters=None, fields=None, limit=80, order=None, context=None):
         """Busca registros com search_read.
 
         Args:
@@ -155,18 +180,22 @@ class OdooClient:
             kwargs["fields"] = fields
         if order:
             kwargs["order"] = order
-        return self._call(model, "search_read", [filters or []], kwargs)
+        return self._call(model, "search_read", [filters or []], kwargs, context=context)
 
-    def count(self, model, filters=None):
+    def count(self, model, filters=None, context=None):
         """Conta registros sem retornar dados. Mais eficiente que len(search(...)).
 
         Returns:
             Inteiro com o total de registros que atendem ao filtro.
         """
-        return self._call(model, "search_count", [filters or []])
+        return self._call(model, "search_count", [filters or []], context=context)
 
-    def get(self, model, record_id, fields=None):
+    def get(self, model, record_id, fields=None, context=None):
         """Le um unico registro pelo ID.
+
+        Args:
+            context: dict opcional mesclado com o contexto default. Ex: {"lang": "en_US"}
+                     para ler campos traduziveis em ingles.
 
         Returns:
             Dicionario do registro, ou None se nao encontrado.
@@ -174,24 +203,29 @@ class OdooClient:
         kwargs = {}
         if fields:
             kwargs["fields"] = fields
-        result = self._call(model, "read", [[record_id]], kwargs)
+        result = self._call(model, "read", [[record_id]], kwargs, context=context)
         return result[0] if result else None
 
-    def create(self, model, values):
+    def create(self, model, values, context=None):
         """Cria um registro e retorna o ID criado (int)."""
-        return self._call(model, "create", [values])
+        return self._call(model, "create", [values], context=context)
 
-    def update(self, model, record_id, values):
-        """Atualiza campos de um registro existente (write parcial). Retorna True."""
-        return self._call(model, "write", [[record_id], values])
+    def update(self, model, record_id, values, context=None):
+        """Atualiza campos de um registro existente (write parcial). Retorna True.
 
-    def delete(self, model, record_id):
+        Args:
+            context: dict opcional mesclado com o contexto default. Use {"lang": "en_US"}
+                     para escrever a traducao em ingles de campos traduziveis (name, description).
+        """
+        return self._call(model, "write", [[record_id], values], context=context)
+
+    def delete(self, model, record_id, context=None):
         """Deleta permanentemente um registro (unlink). Acao irreversivel. Retorna True."""
-        return self._call(model, "unlink", [[record_id]])
+        return self._call(model, "unlink", [[record_id]], context=context)
 
-    def fields(self, model):
+    def fields(self, model, context=None):
         """Retorna metadados dos campos do modelo: {campo: {string, type}}."""
-        return self._call(model, "fields_get", [], {"attributes": ["string", "type"]})
+        return self._call(model, "fields_get", [], {"attributes": ["string", "type"]}, context=context)
 
 
 # ─── Resolver ─────────────────────────────────────────────────────────────────
