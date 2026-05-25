@@ -1,0 +1,70 @@
+# Configuracao do cliente: Deepstrat
+#
+# CREDENCIAIS: Deixe em branco aqui e use variaveis de ambiente,
+# ou preencha apenas em ambientes seguros (nunca commitar com key preenchida).
+#
+# Variaveis de ambiente usadas como fallback:
+#   ODOO_URL, ODOO_DB, ODOO_LOGIN, ODOO_KEY
+
+slug: sudoeste
+nome: Sudoeste Ambiental
+moeda: BRL
+
+contexto:
+  descricao: "Transportes e limpeza de resíduos"
+  segmento: "Transportes"
+  modulos_ativos:
+    - Projetos
+    - Timesheets
+    - CRM
+    - Faturamento
+    - Compras
+    - WhatsApp
+    - Serviços de Campo
+    - Funcionários
+
+odoo:
+  url: https://sudoesteambiental.odoo.com
+  db: carlosgottardi-deepstrat-sudoesteambiental-producti-31355625
+  # Idioma injetado em context={'lang': ...} em todas as chamadas XML-RPC.
+  # Garante que campos traduziveis (name, description) sejam lidos/escritos
+  # em pt_BR por default, independente do idioma do usuario autenticado.
+  # Para escrever em outro idioma numa chamada especifica, use atualizar_traducoes().
+  lang: pt_BR
+
+# IDs de tipos de atividade (variam por instancia Odoo)
+# Para descobrir os seus: python odoo.py busca mail.activity.type "id,name"
+activity_types:
+  call: 2 # "Ligacao / Call"
+  todo: 4 # "To Do / Pendencia"
+
+# Integracao WhatsApp
+whatsapp:
+  # ID do template de abordagem de leads (null = desabilita envio automatico)
+  template_abordagem_leads:
+
+# Estilo dos relatorios gerados para este cliente
+relatorio:
+  estilo: |
+    Profissional / McKinsey. Tipografia Calibri, paleta restrita baseada em navy
+    (#1B2A4A) com acentos em cinza neutro e warm gray. Espacamento generoso,
+    hierarquia visual exclusivamente por peso de fonte e cor de fundo — sem bordas
+    excessivas, sem excesso de preenchimento. Gridlines desligadas em todas as abas.
+    Valores negativos entre parenteses. Headers de secao com fundo navy e fonte
+    branca bold. Linhas de dados com zebra sutil (warm gray / branco alternado).
+    Resultado deve parecer um deliverable de consultoria estrategica de topo
+    (McKinsey, BCG, Bain) — limpo, executivo, sem poluicao visual.
+
+# Configuracoes de CRM
+crm:
+  stage_novos: "Novos" # Nome exato da etapa de leads novos nao qualificados
+  metodologia: |
+    METODOLOGIA DE QUALIFICACAO:
+    1. Para cada lead, pesquise a empresa online (Google, Instagram, site, CNPJ).
+    2. Analise sinais: site proprio (+), email corporativo (+), presenca digital (+), email .edu.br (-), nome sem sentido (-), telefone incompleto (-).
+    3. Classifique: 3=empresa real confirmada com necessidade ERP, 2=provavelmente real mas sem confirmacao, 1=pouca info/micro, 0=spam/bot/academico.
+    4. Atualize: capitalizar nomes, preencher empresa, adicionar pesquisa na descricao, definir prioridade, adicionar website se encontrado.
+    5. Para leads prioridade 3: enviar WhatsApp de abordagem (auto) + criar atividade Call.
+       Para leads prioridade 2: criar atividade de revisao manual (To Do).
+    6. Titulo padrao: 'Lead Odoo: Nome do Contato — Empresa'.
+    Detalhes completos: docs/qualificacao-leads.md
