@@ -1,6 +1,9 @@
 # Credenciais — NUNCA subir
 .env
-clients/
+
+# Dados temporários e relatórios gerados
+data/
+reports/
 
 # Python
 __pycache__/
