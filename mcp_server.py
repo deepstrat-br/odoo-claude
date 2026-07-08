@@ -17,11 +17,14 @@ MOEDA: Cada documento tem sua propria moeda (currency_id). As tools financeiras
 retornam a moeda real de cada registro — nunca assuma uma moeda especifica.
 """
 
+import functools
 import json
 import os
 import re
+import threading
 from collections import defaultdict
 from datetime import date, datetime
+from anyio import to_thread
 from mcp.server.fastmcp import FastMCP
 from odoo import OdooClient, Resolver, load_client_config
 
@@ -46,12 +49,31 @@ mcp = FastMCP(
     ),
 )
 
+def tool(**tool_kwargs):
+    """Registra uma tool sync no FastMCP executando-a em thread pool.
+
+    As chamadas XML-RPC ao Odoo sao bloqueantes. Registradas direto como sync,
+    elas travariam o event loop do MCP — requisicoes concorrentes enfileiram
+    e estouram timeout. O wrapper async delega ao thread pool do anyio,
+    liberando o loop para atender outras requisicoes em paralelo.
+    """
+    def decorator(fn):
+        @functools.wraps(fn)
+        async def wrapper(**kwargs):
+            return await to_thread.run_sync(functools.partial(fn, **kwargs))
+        mcp.tool(**tool_kwargs)(wrapper)
+        return fn
+    return decorator
+
+
 # Diretorio de configs de clientes
 _CLIENTS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "clients")
 
 # Conexao lazy — inicializa apenas no primeiro uso, resetada ao trocar cliente
 _odoo = None
 _resolver = None
+# RLock: get_resolver() chama get_odoo() dentro do lock
+_conn_lock = threading.RLock()
 
 
 def get_config():
@@ -63,23 +85,26 @@ def get_config():
 def _reset_connection():
     """Reseta conexao lazy para forcar reconexao com novo cliente."""
     global _odoo, _resolver
-    _odoo = None
-    _resolver = None
+    with _conn_lock:
+        _odoo = None
+        _resolver = None
 
 
 def get_odoo():
     global _odoo
-    if _odoo is None:
-        c = get_config()["odoo"]
-        _odoo = OdooClient(url=c["url"], db=c["db"], login=c["login"], key=c["key"])
-    return _odoo
+    with _conn_lock:
+        if _odoo is None:
+            c = get_config()["odoo"]
+            _odoo = OdooClient(url=c["url"], db=c["db"], login=c["login"], key=c["key"])
+        return _odoo
 
 
 def get_resolver():
     global _resolver
-    if _resolver is None:
-        _resolver = Resolver(get_odoo())
-    return _resolver
+    with _conn_lock:
+        if _resolver is None:
+            _resolver = Resolver(get_odoo())
+        return _resolver
 
 
 def serialize(obj):
@@ -92,7 +117,7 @@ def serialize(obj):
 # ─── Tools de cliente ────────────────────────────────────────────────────────
 
 
-@mcp.tool()
+@tool()
 def listar_clientes() -> str:
     """Lista os clientes disponiveis (arquivos YAML em clients/).
 
@@ -127,7 +152,7 @@ def listar_clientes() -> str:
     }, ensure_ascii=False)
 
 
-@mcp.tool()
+@tool()
 def trocar_cliente(slug: str) -> str:
     """Troca o cliente ativo do servidor MCP.
 
@@ -174,7 +199,7 @@ def trocar_cliente(slug: str) -> str:
 # ─── Tools genericas (CRUD) ──────────────────────────────────────────────────
 
 
-@mcp.tool()
+@tool()
 def buscar(
     modelo: str,
     filtros: list | None = None,
@@ -209,7 +234,7 @@ def buscar(
     return json.dumps(records, default=serialize, ensure_ascii=False)
 
 
-@mcp.tool()
+@tool()
 def contar(modelo: str, filtros: list | None = None) -> int:
     """Conta registros que atendem ao filtro, sem retornar os dados. Mais rapido que buscar().
 
@@ -224,7 +249,7 @@ def contar(modelo: str, filtros: list | None = None) -> int:
     return get_odoo().count(modelo, filters=filtros or [])
 
 
-@mcp.tool()
+@tool()
 def ler_registro(modelo: str, id: int, campos: list[str] | None = None) -> str:
     """Le um unico registro pelo ID. Mais eficiente que buscar() para registros individuais.
 
@@ -241,7 +266,7 @@ def ler_registro(modelo: str, id: int, campos: list[str] | None = None) -> str:
     return json.dumps(record, default=serialize, ensure_ascii=False)
 
 
-@mcp.tool()
+@tool()
 def criar_registro(modelo: str, valores: dict) -> str:
     """Cria um novo registro no Odoo. Para tarefas de projeto, prefira criar_tarefa() (mais ergonomico).
 
@@ -261,7 +286,7 @@ def criar_registro(modelo: str, valores: dict) -> str:
     return json.dumps({"id": record_id, "modelo": modelo, "status": "criado"})
 
 
-@mcp.tool()
+@tool()
 def atualizar_registro(modelo: str, id: int, valores: dict) -> str:
     """Atualiza campos de um registro existente no Odoo (update parcial).
 
@@ -277,7 +302,7 @@ def atualizar_registro(modelo: str, id: int, valores: dict) -> str:
     return json.dumps({"id": id, "modelo": modelo, "status": "atualizado"})
 
 
-@mcp.tool()
+@tool()
 def deletar_registro(modelo: str, id: int) -> str:
     """DESTRUTIVO — Deleta permanentemente um registro do Odoo. Acao irreversivel.
 
@@ -295,7 +320,7 @@ def deletar_registro(modelo: str, id: int) -> str:
     return json.dumps({"id": id, "modelo": modelo, "status": "deletado"})
 
 
-@mcp.tool()
+@tool()
 def listar_campos(modelo: str) -> str:
     """Lista todos os campos de um modelo com nome tecnico, label em portugues e tipo.
 
@@ -318,7 +343,7 @@ def listar_campos(modelo: str) -> str:
 # ─── Tools especializadas ────────────────────────────────────────────────────
 
 
-@mcp.tool()
+@tool()
 def listar_projetos() -> str:
     """Lista todos os projetos ativos com ID, nome, cliente, total de tarefas e prazo.
 
@@ -347,7 +372,7 @@ def listar_projetos() -> str:
     return json.dumps(rows, default=serialize, ensure_ascii=False)
 
 
-@mcp.tool()
+@tool()
 def listar_tarefas(
     projeto: str | int,
     etapa: str | None = None,
@@ -395,7 +420,7 @@ def listar_tarefas(
     return json.dumps(rows, default=serialize, ensure_ascii=False)
 
 
-@mcp.tool()
+@tool()
 def criar_tarefa(
     projeto: str | int,
     nome: str,
@@ -447,7 +472,7 @@ def criar_tarefa(
     return json.dumps({"id": task_id, "nome": nome, "projeto": str(projeto), "status": "criada"})
 
 
-@mcp.tool()
+@tool()
 def mover_tarefa(tarefa_id: int, etapa: str) -> str:
     """Move uma tarefa para outra etapa. Equivale a arrastar o card no Kanban.
 
@@ -463,7 +488,7 @@ def mover_tarefa(tarefa_id: int, etapa: str) -> str:
     return json.dumps({"id": tarefa_id, "etapa": etapa, "status": "movida"})
 
 
-@mcp.tool()
+@tool()
 def resumo_financeiro() -> str:
     """Retorna painel financeiro: faturas a receber/vencidas, contas a pagar e pedidos de venda abertos.
 
@@ -536,7 +561,7 @@ def resumo_financeiro() -> str:
     })
 
 
-@mcp.tool()
+@tool()
 def pipeline_crm(
     etapa: str | None = None,
     responsavel: str | None = None,
@@ -589,7 +614,7 @@ def pipeline_crm(
     return json.dumps(rows, default=serialize, ensure_ascii=False)
 
 
-@mcp.tool()
+@tool()
 def lancar_horas(
     projeto: str | int,
     tarefa: str | int | None = None,
@@ -649,7 +674,7 @@ def lancar_horas(
     return json.dumps({"id": line_id, "horas": horas, "projeto": str(projeto), "status": "lancado"})
 
 
-@mcp.tool()
+@tool()
 def resolver_nome(modelo: str, nome: str) -> str:
     """Resolve um nome textual para ID numerico no Odoo (busca exata, depois ilike).
 
@@ -689,7 +714,7 @@ def _get_metodologia():
     return (_config.get("crm", {}).get("metodologia") or "").strip() or _METODOLOGIA_FALLBACK
 
 
-@mcp.tool()
+@tool()
 def leads_pendentes_qualificacao(limite: int = 30) -> str:
     """Retorna leads novos nao qualificados (stage=Novos, priority=0, sem pesquisa na descricao).
 
@@ -754,7 +779,7 @@ def leads_pendentes_qualificacao(limite: int = 30) -> str:
     }, default=serialize, ensure_ascii=False)
 
 
-@mcp.tool()
+@tool()
 def qualificar_lead(
     lead_id: int,
     prioridade: int,
@@ -925,7 +950,7 @@ def qualificar_lead(
 # ─── WhatsApp ────────────────────────────────────────────────────────────────
 
 
-@mcp.tool()
+@tool()
 def listar_templates_whatsapp(
     modelo: str | None = None,
     apenas_aprovados: bool = True,
@@ -1001,7 +1026,7 @@ def listar_templates_whatsapp(
     return json.dumps(rows, default=serialize, ensure_ascii=False)
 
 
-@mcp.tool()
+@tool()
 def enviar_whatsapp(
     template_id: int,
     registro_id: int,
@@ -1101,7 +1126,7 @@ def enviar_whatsapp(
     }, default=serialize, ensure_ascii=False)
 
 
-@mcp.tool()
+@tool()
 def preview_whatsapp(
     template_id: int,
     registro_id: int,

@@ -27,6 +27,7 @@ import xmlrpc.client
 import json
 import os
 import sys
+import threading
 
 # Carrega .env se existir (mesmo diretorio do script)
 _env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
@@ -97,6 +98,32 @@ def load_client_config(slug=None):
     return config
 
 
+class _TimeoutTransport(xmlrpc.client.Transport):
+    """Transport HTTP com timeout de socket configuravel."""
+
+    def __init__(self, timeout):
+        super().__init__()
+        self._timeout = timeout
+
+    def make_connection(self, host):
+        conn = super().make_connection(host)
+        conn.timeout = self._timeout
+        return conn
+
+
+class _TimeoutSafeTransport(xmlrpc.client.SafeTransport):
+    """Transport HTTPS com timeout de socket configuravel."""
+
+    def __init__(self, timeout):
+        super().__init__()
+        self._timeout = timeout
+
+    def make_connection(self, host):
+        conn = super().make_connection(host)
+        conn.timeout = self._timeout
+        return conn
+
+
 class OdooClient:
     """Cliente XML-RPC para o Odoo ERP.
 
@@ -106,11 +133,15 @@ class OdooClient:
     Aceita credenciais explicitas ou faz fallback para variaveis de ambiente
     ODOO_URL, ODOO_DB, ODOO_LOGIN e ODOO_KEY (carregadas do .env).
 
+    Thread-safe: cada thread usa seu proprio ServerProxy (xmlrpc.client nao e
+    thread-safe), permitindo chamadas concorrentes. Todas as chamadas tem
+    timeout de socket (default 30s, configuravel via ODOO_TIMEOUT ou parametro).
+
     Attributes:
         uid: ID do usuario autenticado (int). Disponivel apos __init__.
     """
 
-    def __init__(self, url=None, db=None, login=None, key=None):
+    def __init__(self, url=None, db=None, login=None, key=None, timeout=None):
         if not any([url, db, login, key]):
             cfg = load_client_config()
             url, db, login, key = (cfg["odoo"][k] for k in ("url", "db", "login", "key"))
@@ -123,13 +154,33 @@ class OdooClient:
                 "Credenciais incompletas. Configure via clients/<slug>.yaml ou .env."
             )
 
+        self._url = url.rstrip("/")
         self._db = db
         self._key = key
-        common = xmlrpc.client.ServerProxy(f"{url}/xmlrpc/2/common")
+        self._timeout = timeout or float(os.environ.get("ODOO_TIMEOUT", "30"))
+        self._local = threading.local()
+
+        common = self._make_proxy("common")
         self.uid = common.authenticate(db, login, key, {})
         if not self.uid:
             raise ConnectionError("Falha na autenticacao. Verifique as credenciais.")
-        self._models = xmlrpc.client.ServerProxy(f"{url}/xmlrpc/2/object")
+
+    def _make_proxy(self, endpoint):
+        transport_cls = (
+            _TimeoutSafeTransport if self._url.startswith("https") else _TimeoutTransport
+        )
+        return xmlrpc.client.ServerProxy(
+            f"{self._url}/xmlrpc/2/{endpoint}", transport=transport_cls(self._timeout)
+        )
+
+    @property
+    def _models(self):
+        """ServerProxy por thread — xmlrpc.client nao e thread-safe."""
+        proxy = getattr(self._local, "models", None)
+        if proxy is None:
+            proxy = self._make_proxy("object")
+            self._local.models = proxy
+        return proxy
 
     def _call(self, model, method, args, kwargs=None):
         """Chama execute_kw diretamente. Use para metodos nao cobertos pela API publica."""
