@@ -61,7 +61,7 @@ CLOCKIFY_KEY=sua-clockify-api-key
 
 ### Selecionar o cliente
 
-- **MCP:** parametro `cliente` em cada tool (recomendado), ou `ODOO_CLIENT` no env do servidor como padrao
+- **MCP:** parametro `cliente` em cada tool (obrigatorio — sem cliente padrao)
 - **CLI:** `python odoo.py --client <slug> <comando>` ou env `ODOO_CLIENT=<slug>`
 - **Python:** `load_client_config("<slug>")`
 
@@ -119,16 +119,16 @@ O `mcp_server.py` expoe o Odoo como tools via [Model Context Protocol](https://m
 
 | Categoria              | Tools                                                                                                                            |
 | ---------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
-| **Clientes**           | `listar_clientes`, `trocar_cliente`                                                                                              |
+| **Clientes**           | `listar_clientes`                                                                                                                |
 | **CRUD generico**      | `buscar`, `contar`, `ler_registro`, `criar_registro`, `atualizar_registro`, `deletar_registro`, `listar_campos`, `resolver_nome` |
 | **Projetos & Tarefas** | `listar_projetos`, `listar_tarefas`, `criar_tarefa`, `mover_tarefa`, `lancar_horas`                                              |
 | **CRM**                | `pipeline_crm`, `leads_pendentes_qualificacao`, `qualificar_lead`                                                                |
 | **Financeiro**         | `resumo_financeiro`                                                                                                              |
 | **WhatsApp**           | `listar_templates_whatsapp`, `enviar_whatsapp`, `preview_whatsapp`                                                               |
 
-### Multi-cliente: como o servidor seleciona o cliente
+### Multi-cliente: o parametro `cliente` e OBRIGATORIO
 
-Toda tool (exceto as de gerenciamento) aceita o parametro opcional **`cliente`** (slug):
+Toda tool (exceto `listar_clientes`) exige o parametro **`cliente`** (slug):
 
 ```
 contar(modelo="res.partner", cliente="sudoeste")
@@ -138,12 +138,10 @@ listar_projetos(cliente="fenix")
 - Com `cliente` explicito, a chamada opera naquele cliente **sem afetar as demais** —
   as conexoes ficam em pool por slug, permitindo varios clientes simultaneos
   (inclusive em sessoes paralelas do Claude).
-- Sem `cliente`, vale o **padrao da sessao**: env `ODOO_CLIENT` no startup do servidor,
-  alteravel via `trocar_cliente(slug)` (que muda apenas o padrao, sem derrubar conexoes).
-- `listar_clientes()` mostra os slugs disponiveis e o `cliente_padrao` atual.
-
-> Em projetos/sessoes dedicados a um unico cliente, prefira **sempre passar o
-> `cliente` explicito** nas chamadas — e imune a mudancas de padrao feitas em paralelo.
+- **Nao ha cliente padrao nem troca global de cliente.** Chamadas sem `cliente`
+  retornam erro indicando os slugs disponiveis e o uso correto — assim nenhuma
+  operacao cai silenciosamente no Odoo errado.
+- `listar_clientes()` mostra os slugs disponiveis e os detalhes de cada cliente.
 
 ### Como usar com Claude Code
 
@@ -154,15 +152,11 @@ Adicione ao seu `claude_desktop_config.json` ou configure via `claude mcp add`:
   "mcpServers": {
     "odoo": {
       "command": "python",
-      "args": ["caminho/para/mcp_server.py"],
-      "env": { "ODOO_CLIENT": "deepstrat" }
+      "args": ["caminho/para/mcp_server.py"]
     }
   }
 }
 ```
-
-O `env.ODOO_CLIENT` define o cliente padrao do servidor (opcional — chamadas com
-`cliente` explicito nao dependem dele).
 
 As chamadas XML-RPC rodam em thread pool com timeout de socket (default 30s,
 configuravel via env `ODOO_TIMEOUT`), entao requisicoes concorrentes nao travam

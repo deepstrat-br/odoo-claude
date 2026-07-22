@@ -60,7 +60,7 @@ def load_client_config(slug=None):
     """
     if not slug:
         raise ValueError(
-            "Slug do cliente obrigatorio. Passe o slug explicitamente ou use trocar_cliente() no MCP."
+            "Slug do cliente obrigatorio. Passe o slug explicitamente (ex: load_client_config('deepstrat'))."
         )
 
     yaml_path = os.path.join(_BASE_DIR, "clients", f"{slug}.yaml")

@@ -179,11 +179,11 @@ crm:
 - Env var: `ODOO_CLIENT=slug`
 - CLI: `python odoo.py --client slug <comando>`
 - Python: `load_client_config("slug")`
-- MCP: toda tool aceita o parametro opcional `cliente` (slug) — seleciona o cliente
-  daquela chamada sem afetar as demais. Conexoes ficam em pool por slug, entao varios
-  clientes podem ser usados simultaneamente (inclusive em sessoes paralelas) sem conflito.
-  Sem `cliente`, vale o padrao da sessao: `ODOO_CLIENT` no env do servidor ou
-  `trocar_cliente(slug)` (que muda apenas o padrao, sem derrubar outras conexoes).
+- MCP: toda tool EXIGE o parametro `cliente` (slug) — seleciona o cliente daquela
+  chamada sem afetar as demais. Conexoes ficam em pool por slug, entao varios
+  clientes podem ser usados simultaneamente (inclusive em sessoes paralelas) sem
+  conflito. Nao ha cliente padrao nem troca global: chamadas sem `cliente` retornam
+  erro apontando o uso correto. Slugs disponiveis via `listar_clientes()`.
 
 ---
 
