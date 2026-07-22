@@ -1,8 +1,10 @@
-# Odoo Deepstrat — MCP Server, CLI & Automations
+# Odoo — MCP Server, CLI & Automations (Multi-cliente)
 
-Cliente Python XML-RPC + servidor MCP (Model Context Protocol) para o Odoo ERP da Deepstrat. Permite que agentes LLM (Claude Code, etc.) e scripts interajam diretamente com o ERP — buscar, criar, atualizar registros, qualificar leads, enviar WhatsApp, lancar horas e mais.
+Cliente Python XML-RPC + servidor MCP (Model Context Protocol) para Odoo ERP, com suporte a **multiplos clientes** (um YAML por cliente em `clients/`). Permite que agentes LLM (Claude Code, etc.) e scripts interajam diretamente com o ERP — buscar, criar, atualizar registros, qualificar leads, enviar WhatsApp, lancar horas e mais.
 
-> **Moeda:** Todos os valores monetarios estao em **BRL (R$)**, salvo quando `currency_id` indicar outra moeda.
+O servidor MCP atende varios clientes **simultaneamente**: toda tool aceita o parametro opcional `cliente` (slug), e as conexoes ficam em pool por slug — sessoes paralelas operando em clientes diferentes nao interferem umas nas outras.
+
+> **Moeda:** Nunca assuma uma moeda especifica. Cada documento no Odoo (fatura, pedido, oportunidade) tem seu proprio `currency_id`, e as tools financeiras retornam a moeda real de cada registro.
 
 ---
 
@@ -20,19 +22,32 @@ pip install pyyaml python-dotenv
 cp .env.example .env
 # Edite o .env com seus dados (veja secao Configuracao abaixo)
 
-# 4. Teste a conexao
-python odoo.py projetos
+# 4. Teste a conexao (escolha o cliente pelo slug)
+python odoo.py --client deepstrat projetos
 ```
 
 ---
 
 ## Configuracao
 
-### Credenciais (.env)
+### Clientes (clients/<slug>.yaml)
 
-Cada dev cria seu proprio `.env` na raiz do projeto (ja esta no `.gitignore`):
+Cada cliente Odoo tem um YAML versionado em `clients/` com URL, DB, IDs de atividades,
+templates WhatsApp e config de CRM (ex: `clients/deepstrat.yaml`, `clients/fenix.yaml`,
+`clients/sudoeste.yaml`). Para adicionar um cliente novo, copie um YAML existente e
+ajuste slug/nome/IDs.
+
+Credenciais (login/key) **nunca** vao no YAML — ficam no `.env` ou em variaveis de
+ambiente, com prefixo do slug:
 
 ```env
+# Credenciais por cliente: <SLUG>_ODOO_LOGIN / <SLUG>_ODOO_KEY
+DEEPSTRAT_ODOO_LOGIN=seu-email@deepstrat.com.br
+DEEPSTRAT_ODOO_KEY=sua-api-key
+FENIX_ODOO_LOGIN=...
+FENIX_ODOO_KEY=...
+
+# Fallback sem YAML (modo mono-cliente legado)
 ODOO_URL=https://deepstrat.odoo.com
 ODOO_DB=deepstrat
 ODOO_LOGIN=seu-email@deepstrat.com.br
@@ -43,6 +58,12 @@ CLOCKIFY_KEY=sua-clockify-api-key
 ```
 
 > **API Key do Odoo:** Settings > My Profile > Account Security > API Keys
+
+### Selecionar o cliente
+
+- **MCP:** parametro `cliente` em cada tool (recomendado), ou `ODOO_CLIENT` no env do servidor como padrao
+- **CLI:** `python odoo.py --client <slug> <comando>` ou env `ODOO_CLIENT=<slug>`
+- **Python:** `load_client_config("<slug>")`
 
 ### Configuracao pessoal (CLAUDE.local.md)
 
@@ -56,8 +77,13 @@ Veja o exemplo no `CLAUDE.md` (secao "Configuracao local").
 
 ```
 odoo-deepstrat/
-├── odoo.py                          # Cliente XML-RPC + Resolver (lib core)
-├── mcp_server.py                    # Servidor MCP para agentes LLM
+├── odoo.py                          # Cliente XML-RPC + Resolver + load_client_config (lib core)
+├── mcp_server.py                    # Servidor MCP para agentes LLM (multi-cliente)
+│
+├── clients/                         # Configs de clientes (YAML, versionados)
+│   ├── deepstrat.yaml
+│   ├── fenix.yaml
+│   └── sudoeste.yaml
 │
 ├── scripts/                         # Scripts de automacao por modulo Odoo
 │   ├── project/
@@ -93,11 +119,31 @@ O `mcp_server.py` expoe o Odoo como tools via [Model Context Protocol](https://m
 
 | Categoria              | Tools                                                                                                                            |
 | ---------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| **Clientes**           | `listar_clientes`, `trocar_cliente`                                                                                              |
 | **CRUD generico**      | `buscar`, `contar`, `ler_registro`, `criar_registro`, `atualizar_registro`, `deletar_registro`, `listar_campos`, `resolver_nome` |
 | **Projetos & Tarefas** | `listar_projetos`, `listar_tarefas`, `criar_tarefa`, `mover_tarefa`, `lancar_horas`                                              |
 | **CRM**                | `pipeline_crm`, `leads_pendentes_qualificacao`, `qualificar_lead`                                                                |
 | **Financeiro**         | `resumo_financeiro`                                                                                                              |
 | **WhatsApp**           | `listar_templates_whatsapp`, `enviar_whatsapp`, `preview_whatsapp`                                                               |
+
+### Multi-cliente: como o servidor seleciona o cliente
+
+Toda tool (exceto as de gerenciamento) aceita o parametro opcional **`cliente`** (slug):
+
+```
+contar(modelo="res.partner", cliente="sudoeste")
+listar_projetos(cliente="fenix")
+```
+
+- Com `cliente` explicito, a chamada opera naquele cliente **sem afetar as demais** —
+  as conexoes ficam em pool por slug, permitindo varios clientes simultaneos
+  (inclusive em sessoes paralelas do Claude).
+- Sem `cliente`, vale o **padrao da sessao**: env `ODOO_CLIENT` no startup do servidor,
+  alteravel via `trocar_cliente(slug)` (que muda apenas o padrao, sem derrubar conexoes).
+- `listar_clientes()` mostra os slugs disponiveis e o `cliente_padrao` atual.
+
+> Em projetos/sessoes dedicados a um unico cliente, prefira **sempre passar o
+> `cliente` explicito** nas chamadas — e imune a mudancas de padrao feitas em paralelo.
 
 ### Como usar com Claude Code
 
@@ -108,23 +154,32 @@ Adicione ao seu `claude_desktop_config.json` ou configure via `claude mcp add`:
   "mcpServers": {
     "odoo": {
       "command": "python",
-      "args": ["caminho/para/mcp_server.py"]
+      "args": ["caminho/para/mcp_server.py"],
+      "env": { "ODOO_CLIENT": "deepstrat" }
     }
   }
 }
 ```
+
+O `env.ODOO_CLIENT` define o cliente padrao do servidor (opcional — chamadas com
+`cliente` explicito nao dependem dele).
+
+As chamadas XML-RPC rodam em thread pool com timeout de socket (default 30s,
+configuravel via env `ODOO_TIMEOUT`), entao requisicoes concorrentes nao travam
+o servidor.
 
 ---
 
 ## CLI
 
 ```bash
-python odoo.py projetos                                          # Listar projetos ativos
-python odoo.py tarefas <id_ou_nome>                              # Tarefas de um projeto
-python odoo.py financeiro                                        # Resumo financeiro
-python odoo.py busca res.partner "name,email,city" "customer_rank>0" 10  # Busca generica
-python odoo.py criar-tarefa <proj_id> "Nome da Tarefa" 4.0      # Criar tarefa
-python odoo.py campos account.move                               # Inspecionar campos de um modelo
+# Selecione o cliente com --client <slug> (ou env ODOO_CLIENT=<slug>)
+python odoo.py --client deepstrat projetos                       # Listar projetos ativos
+python odoo.py --client deepstrat tarefas <id_ou_nome>           # Tarefas de um projeto
+python odoo.py --client deepstrat financeiro                     # Resumo financeiro
+python odoo.py --client deepstrat busca res.partner "name,email,city" "customer_rank>0" 10
+python odoo.py --client deepstrat criar-tarefa <proj_id> "Nome da Tarefa" 4.0
+python odoo.py --client deepstrat campos account.move            # Inspecionar campos de um modelo
 ```
 
 ---
@@ -206,9 +261,10 @@ python integrations/clockify.py comparar-rti 2026-04-01 2026-04-30
 ## Modulo Python
 
 ```python
-from odoo import OdooClient, Resolver
+from odoo import OdooClient, Resolver, load_client_config
 
-odoo = OdooClient()  # le credenciais do .env
+config = load_client_config("deepstrat")  # ou usa env ODOO_CLIENT
+odoo = OdooClient(**config["odoo"])
 
 # CRUD basico
 odoo.search('res.partner', filters=[["customer_rank", ">", 0]], fields=['name', 'email'], limit=10)
