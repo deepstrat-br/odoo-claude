@@ -2,8 +2,13 @@
 MCP Server for Odoo — Multi-client
 
 Expoe o Odoo ERP via XML-RPC como ferramentas MCP.
-Suporta multiplos clientes via YAML em clients/. Use listar_clientes() para ver
-os disponiveis e trocar_cliente(slug) para alternar em runtime.
+Suporta multiplos clientes via YAML em clients/, com conexoes em pool por slug:
+- Toda tool aceita o parametro opcional 'cliente' (slug) — seleciona o cliente
+  daquela chamada sem afetar as demais. Ideal para operar varios clientes
+  simultaneamente (inclusive em sessoes paralelas).
+- Sem 'cliente', usa o padrao da sessao: env ODOO_CLIENT no startup,
+  alteravel via trocar_cliente(slug).
+- Use listar_clientes() para ver os slugs disponiveis.
 
 Tools genericas (CRUD): buscar, contar, ler_registro, criar_registro,
     atualizar_registro, deletar_registro, listar_campos.
@@ -28,16 +33,16 @@ from anyio import to_thread
 from mcp.server.fastmcp import FastMCP
 from odoo import OdooClient, Resolver, load_client_config
 
-# Config inicializada como None — requer trocar_cliente() antes de usar
-_config = None
-
 mcp = FastMCP(
     "MCP Server for Odoo",
     instructions=(
-        "Servidor MCP para o Odoo ERP com suporte a multiplos clientes. "
-        "Use listar_clientes() para ver os clientes disponiveis e "
-        "trocar_cliente(slug) para alternar entre eles. "
-        "Quando o usuario mencionar um cliente especifico, troque para ele antes de executar outras tools. "
+        "Servidor MCP para o Odoo ERP com suporte a multiplos clientes simultaneos. "
+        "Toda tool aceita o parametro opcional 'cliente' (slug) que seleciona o cliente "
+        "daquela chamada — as conexoes ficam em pool, entao usar um cliente nao interfere "
+        "nos demais. Sem 'cliente', vale o padrao da sessao (env ODOO_CLIENT ou "
+        "trocar_cliente). Use listar_clientes() para ver os slugs disponiveis. "
+        "Quando o usuario mencionar um cliente especifico, passe o slug no parametro "
+        "'cliente' das tools (preferido) ou defina-o como padrao via trocar_cliente(slug). "
         "Permite buscar, criar, atualizar e deletar registros, "
         "alem de operacoes especializadas para projetos, tarefas, CRM, financeiro e WhatsApp. "
         "IMPORTANTE — MOEDA: Cada documento (fatura, pedido, oportunidade) tem sua propria moeda "
@@ -69,42 +74,50 @@ def tool(**tool_kwargs):
 # Diretorio de configs de clientes
 _CLIENTS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "clients")
 
-# Conexao lazy — inicializa apenas no primeiro uso, resetada ao trocar cliente
-_odoo = None
-_resolver = None
-# RLock: get_resolver() chama get_odoo() dentro do lock
-_conn_lock = threading.RLock()
+# Cliente padrao da sessao — vem do env ODOO_CLIENT, alteravel via trocar_cliente().
+# E apenas um fallback: tools com o parametro 'cliente' explicito nao dependem dele.
+_default_slug = os.environ.get("ODOO_CLIENT") or None
+
+# Pool de conexoes por slug — cada cliente mantem config/conexao/resolver proprios,
+# criados sob demanda e nunca descartados ao alternar. Assim varios clientes podem
+# ser usados simultaneamente sem um invalidar a conexao do outro.
+_pool = {}
+_pool_lock = threading.RLock()
 
 
-def get_config():
-    if _config is None:
-        raise ValueError("Nenhum cliente ativo. Use trocar_cliente(slug) primeiro.")
-    return _config
+def _ctx(cliente=None):
+    """Retorna a entrada do pool {config, odoo, resolver} para o cliente pedido.
+
+    cliente=None usa o padrao da sessao (env ODOO_CLIENT ou trocar_cliente()).
+    """
+    slug = cliente or _default_slug
+    if not slug:
+        raise ValueError(
+            "Nenhum cliente definido. Passe o parametro 'cliente' na tool, "
+            "defina ODOO_CLIENT no ambiente ou use trocar_cliente(slug). "
+            "Veja os slugs em listar_clientes()."
+        )
+    with _pool_lock:
+        entry = _pool.get(slug)
+        if entry is None:
+            config = load_client_config(slug)
+            c = config["odoo"]
+            odoo = OdooClient(url=c["url"], db=c["db"], login=c["login"], key=c["key"])
+            entry = {"config": config, "odoo": odoo, "resolver": Resolver(odoo)}
+            _pool[slug] = entry
+        return entry
 
 
-def _reset_connection():
-    """Reseta conexao lazy para forcar reconexao com novo cliente."""
-    global _odoo, _resolver
-    with _conn_lock:
-        _odoo = None
-        _resolver = None
+def get_config(cliente=None):
+    return _ctx(cliente)["config"]
 
 
-def get_odoo():
-    global _odoo
-    with _conn_lock:
-        if _odoo is None:
-            c = get_config()["odoo"]
-            _odoo = OdooClient(url=c["url"], db=c["db"], login=c["login"], key=c["key"])
-        return _odoo
+def get_odoo(cliente=None):
+    return _ctx(cliente)["odoo"]
 
 
-def get_resolver():
-    global _resolver
-    with _conn_lock:
-        if _resolver is None:
-            _resolver = Resolver(get_odoo())
-        return _resolver
+def get_resolver(cliente=None):
+    return _ctx(cliente)["resolver"]
 
 
 def serialize(obj):
@@ -147,53 +160,49 @@ def listar_clientes() -> str:
                     clientes.append({"slug": slug, "erro": "Falha ao carregar config"})
 
     return json.dumps({
-        "cliente_ativo": _config.get("slug") if _config else None,
+        "cliente_padrao": _default_slug,
         "clientes": clientes,
     }, ensure_ascii=False)
 
 
 @tool()
 def trocar_cliente(slug: str) -> str:
-    """Troca o cliente ativo do servidor MCP.
+    """Define o cliente PADRAO da sessao (usado por tools chamadas sem o parametro 'cliente').
 
-    Recarrega a configuracao do YAML e reconecta ao Odoo do cliente selecionado.
-    Todas as tools passam a operar no banco de dados do novo cliente.
+    NAO derruba conexoes de outros clientes — cada cliente tem sua propria conexao
+    em pool. Para operar varios clientes ao mesmo tempo, prefira passar o parametro
+    'cliente' explicitamente em cada tool, sem alternar o padrao.
 
     Use listar_clientes() para ver os slugs disponiveis.
 
     Args:
         slug: Identificador do cliente (ex: 'deepstrat'). Corresponde ao arquivo clients/<slug>.yaml.
 
-    Returns JSON {status, cliente, nome, url}.
+    Returns JSON {status, cliente, nome, url, uid}.
     """
-    global _config
+    global _default_slug
 
     try:
-        new_config = load_client_config(slug)
+        entry = _ctx(slug)
     except FileNotFoundError:
         return json.dumps({
             "erro": f"Cliente '{slug}' nao encontrado. Use listar_clientes() para ver os disponiveis."
         }, ensure_ascii=False)
-
-    _config = new_config
-    _reset_connection()
-
-    # Testar conexao
-    try:
-        odoo = get_odoo()
-        return json.dumps({
-            "status": "conectado",
-            "cliente": _config["slug"],
-            "nome": _config["nome"],
-            "url": _config["odoo"]["url"],
-            "uid": odoo.uid,
-        }, ensure_ascii=False)
     except Exception as e:
         return json.dumps({
             "status": "erro_conexao",
-            "cliente": _config["slug"],
+            "cliente": slug,
             "erro": str(e),
         }, ensure_ascii=False)
+
+    _default_slug = slug
+    return json.dumps({
+        "status": "conectado",
+        "cliente": entry["config"]["slug"],
+        "nome": entry["config"]["nome"],
+        "url": entry["config"]["odoo"]["url"],
+        "uid": entry["odoo"].uid,
+    }, ensure_ascii=False)
 
 
 # ─── Tools genericas (CRUD) ──────────────────────────────────────────────────
@@ -206,6 +215,7 @@ def buscar(
     campos: list[str] | None = None,
     limite: int = 20,
     ordem: str | None = None,
+    cliente: str | None = None,
 ) -> str:
     """Busca multiplos registros no Odoo com filtros. Use ler_registro() para buscar um unico ID.
 
@@ -222,8 +232,9 @@ def buscar(
                 Ex: ["id", "name", "email_from", "stage_id"].
         limite: Maximo de registros (default 20; use ate 200 para lotes).
         ordem: Ordenacao SQL. Ex: 'name asc', 'create_date desc'.
+        cliente: Slug do cliente Odoo (ex: 'deepstrat'). None = cliente padrao da sessao.
     """
-    odoo = get_odoo()
+    odoo = get_odoo(cliente)
     records = odoo.search(
         modelo,
         filters=filtros or [],
@@ -235,7 +246,7 @@ def buscar(
 
 
 @tool()
-def contar(modelo: str, filtros: list | None = None) -> int:
+def contar(modelo: str, filtros: list | None = None, cliente: str | None = None) -> int:
     """Conta registros que atendem ao filtro, sem retornar os dados. Mais rapido que buscar().
 
     Use quando precisar apenas da quantidade (ex: quantas faturas em aberto?).
@@ -245,12 +256,13 @@ def contar(modelo: str, filtros: list | None = None) -> int:
     Args:
         modelo: Modelo Odoo.
         filtros: Domain Odoo. None = contar todos. Ex: [["state", "=", "posted"]].
+        cliente: Slug do cliente Odoo (ex: 'deepstrat'). None = cliente padrao da sessao.
     """
-    return get_odoo().count(modelo, filters=filtros or [])
+    return get_odoo(cliente).count(modelo, filters=filtros or [])
 
 
 @tool()
-def ler_registro(modelo: str, id: int, campos: list[str] | None = None) -> str:
+def ler_registro(modelo: str, id: int, campos: list[str] | None = None, cliente: str | None = None) -> str:
     """Le um unico registro pelo ID. Mais eficiente que buscar() para registros individuais.
 
     Returns JSON do registro, ou {"erro": "..."} se nao encontrado.
@@ -259,15 +271,16 @@ def ler_registro(modelo: str, id: int, campos: list[str] | None = None) -> str:
         modelo: Modelo Odoo.
         id: ID do registro.
         campos: Campos a retornar. None = todos.
+        cliente: Slug do cliente Odoo (ex: 'deepstrat'). None = cliente padrao da sessao.
     """
-    record = get_odoo().get(modelo, id, fields=campos)
+    record = get_odoo(cliente).get(modelo, id, fields=campos)
     if not record:
         return json.dumps({"erro": f"Registro {id} nao encontrado em {modelo}"})
     return json.dumps(record, default=serialize, ensure_ascii=False)
 
 
 @tool()
-def criar_registro(modelo: str, valores: dict) -> str:
+def criar_registro(modelo: str, valores: dict, cliente: str | None = None) -> str:
     """Cria um novo registro no Odoo. Para tarefas de projeto, prefira criar_tarefa() (mais ergonomico).
 
     Returns JSON {"id": <novo_id>, "modelo": ..., "status": "criado"}.
@@ -281,13 +294,14 @@ def criar_registro(modelo: str, valores: dict) -> str:
                  Campos many2one aceitam ID inteiro (ex: "project_id": 9).
                  Many2many usam comandos Odoo: [(6, 0, [ids])] para substituir lista.
                  Ex: {"name": "Nova Tarefa", "project_id": 9, "user_ids": [2]}.
+        cliente: Slug do cliente Odoo (ex: 'deepstrat'). None = cliente padrao da sessao.
     """
-    record_id = get_odoo().create(modelo, valores)
+    record_id = get_odoo(cliente).create(modelo, valores)
     return json.dumps({"id": record_id, "modelo": modelo, "status": "criado"})
 
 
 @tool()
-def atualizar_registro(modelo: str, id: int, valores: dict) -> str:
+def atualizar_registro(modelo: str, id: int, valores: dict, cliente: str | None = None) -> str:
     """Atualiza campos de um registro existente no Odoo (update parcial).
 
     Returns JSON {"id": ..., "modelo": ..., "status": "atualizado"}.
@@ -297,13 +311,14 @@ def atualizar_registro(modelo: str, id: int, valores: dict) -> str:
         id: ID do registro.
         valores: Apenas os campos a modificar — nao precisa enviar todos os campos.
                  Ex: {"priority": "1"} para marcar como urgente.
+        cliente: Slug do cliente Odoo (ex: 'deepstrat'). None = cliente padrao da sessao.
     """
-    get_odoo().update(modelo, id, valores)
+    get_odoo(cliente).update(modelo, id, valores)
     return json.dumps({"id": id, "modelo": modelo, "status": "atualizado"})
 
 
 @tool()
-def deletar_registro(modelo: str, id: int) -> str:
+def deletar_registro(modelo: str, id: int, cliente: str | None = None) -> str:
     """DESTRUTIVO — Deleta permanentemente um registro do Odoo. Acao irreversivel.
 
     Confirme com o usuario antes de executar.
@@ -315,13 +330,14 @@ def deletar_registro(modelo: str, id: int) -> str:
     Args:
         modelo: Modelo Odoo.
         id: ID do registro a deletar permanentemente.
+        cliente: Slug do cliente Odoo (ex: 'deepstrat'). None = cliente padrao da sessao.
     """
-    get_odoo().delete(modelo, id)
+    get_odoo(cliente).delete(modelo, id)
     return json.dumps({"id": id, "modelo": modelo, "status": "deletado"})
 
 
 @tool()
-def listar_campos(modelo: str) -> str:
+def listar_campos(modelo: str, cliente: str | None = None) -> str:
     """Lista todos os campos de um modelo com nome tecnico, label em portugues e tipo.
 
     Use antes de criar/atualizar registros para conhecer campos disponiveis.
@@ -331,8 +347,9 @@ def listar_campos(modelo: str) -> str:
 
     Args:
         modelo: Modelo Odoo (ex: 'sale.order', 'crm.lead', 'project.task').
+        cliente: Slug do cliente Odoo (ex: 'deepstrat'). None = cliente padrao da sessao.
     """
-    fields = get_odoo().fields(modelo)
+    fields = get_odoo(cliente).fields(modelo)
     result = {
         k: {"label": v["string"], "tipo": v["type"]}
         for k, v in sorted(fields.items())
@@ -344,15 +361,18 @@ def listar_campos(modelo: str) -> str:
 
 
 @tool()
-def listar_projetos() -> str:
+def listar_projetos(cliente: str | None = None) -> str:
     """Lista todos os projetos ativos com ID, nome, cliente, total de tarefas e prazo.
 
     Retorna apenas projetos com active=True. Para projetos arquivados,
     use buscar('project.project', [['active', '=', False]]).
 
     Returns JSON array [{id, nome, cliente, tarefas, prazo}, ...] ordenado por nome.
+
+    Args:
+        cliente: Slug do cliente Odoo (ex: 'deepstrat'). None = cliente padrao da sessao.
     """
-    odoo = get_odoo()
+    odoo = get_odoo(cliente)
     records = odoo.search(
         "project.project",
         filters=[["active", "=", True]],
@@ -378,6 +398,7 @@ def listar_tarefas(
     etapa: str | None = None,
     incluir_inativas: bool = False,
     limite: int = 50,
+    cliente: str | None = None,
 ) -> str:
     """Lista tarefas de um projeto com etapa, horas planejadas/gastas, prazo e prioridade.
 
@@ -388,8 +409,9 @@ def listar_tarefas(
         etapa: Nome exato da etapa para filtrar (ex: 'Em andamento', 'Backlog'). None = todas.
         incluir_inativas: True para incluir tarefas arquivadas. Default False.
         limite: Maximo de tarefas a retornar (default 50).
+        cliente: Slug do cliente Odoo (ex: 'deepstrat'). None = cliente padrao da sessao.
     """
-    r = get_resolver()
+    r = get_resolver(cliente)
     project_id = r.project(projeto)
 
     filters = [["project_id", "=", project_id]]
@@ -398,7 +420,7 @@ def listar_tarefas(
     if etapa:
         filters.append(["stage_id", "=", r.stage(etapa)])
 
-    records = get_odoo().search(
+    records = get_odoo(cliente).search(
         "project.task",
         filters=filters,
         fields=["id", "name", "stage_id", "allocated_hours", "effective_hours", "user_ids", "date_deadline", "priority"],
@@ -431,6 +453,7 @@ def criar_tarefa(
     descricao: str | None = None,
     tags: list[str] | None = None,
     prioridade: str = "normal",
+    cliente: str | None = None,
 ) -> str:
     """Cria uma tarefa em um projeto. Prefira esta tool a criar_registro() — faz resolucao de nomes automaticamente.
 
@@ -446,8 +469,9 @@ def criar_tarefa(
         descricao: Descricao da tarefa (HTML aceito ou texto simples).
         tags: Lista de nomes de tags existentes (ex: ['CRM', 'Vendas']).
         prioridade: 'normal' (default) ou 'urgente'.
+        cliente: Slug do cliente Odoo (ex: 'deepstrat'). None = cliente padrao da sessao.
     """
-    r = get_resolver()
+    r = get_resolver(cliente)
     vals = {
         "project_id": r.project(projeto),
         "name": nome,
@@ -460,7 +484,7 @@ def criar_tarefa(
     if responsaveis:
         vals["user_ids"] = r.users(responsaveis)
     else:
-        vals["user_ids"] = [get_odoo().uid]
+        vals["user_ids"] = [get_odoo(cliente).uid]
     if prazo:
         vals["date_deadline"] = prazo
     if descricao:
@@ -468,12 +492,12 @@ def criar_tarefa(
     if tags:
         vals["tag_ids"] = r.tags(tags)
 
-    task_id = get_odoo().create("project.task", vals)
+    task_id = get_odoo(cliente).create("project.task", vals)
     return json.dumps({"id": task_id, "nome": nome, "projeto": str(projeto), "status": "criada"})
 
 
 @tool()
-def mover_tarefa(tarefa_id: int, etapa: str) -> str:
+def mover_tarefa(tarefa_id: int, etapa: str, cliente: str | None = None) -> str:
     """Move uma tarefa para outra etapa. Equivale a arrastar o card no Kanban.
 
     Returns JSON {"id": ..., "etapa": ..., "status": "movida"}.
@@ -481,23 +505,27 @@ def mover_tarefa(tarefa_id: int, etapa: str) -> str:
     Args:
         tarefa_id: ID da tarefa.
         etapa: Nome exato da etapa destino (ex: 'Em andamento', 'Concluido', 'Cancelado').
+        cliente: Slug do cliente Odoo (ex: 'deepstrat'). None = cliente padrao da sessao.
     """
-    r = get_resolver()
+    r = get_resolver(cliente)
     stage_id = r.stage(etapa)
-    get_odoo().update("project.task", tarefa_id, {"stage_id": stage_id})
+    get_odoo(cliente).update("project.task", tarefa_id, {"stage_id": stage_id})
     return json.dumps({"id": tarefa_id, "etapa": etapa, "status": "movida"})
 
 
 @tool()
-def resumo_financeiro() -> str:
+def resumo_financeiro(cliente: str | None = None) -> str:
     """Retorna painel financeiro: faturas a receber/vencidas, contas a pagar e pedidos de venda abertos.
 
     Valores agrupados por moeda real de cada documento (currency_id).
 
     Returns JSON {data, faturas_em_aberto, faturas_vencidas, total_a_receber: [{moeda, valor}],
                   pedidos_venda_abertos, contas_a_pagar, total_a_pagar: [{moeda, valor}]}.
+
+    Args:
+        cliente: Slug do cliente Odoo (ex: 'deepstrat'). None = cliente padrao da sessao.
     """
-    odoo = get_odoo()
+    odoo = get_odoo(cliente)
     hoje = str(date.today())
 
     faturas_abertas = odoo.count("account.move", [
@@ -566,6 +594,7 @@ def pipeline_crm(
     etapa: str | None = None,
     responsavel: str | None = None,
     limite: int = 20,
+    cliente: str | None = None,
 ) -> str:
     """Lista oportunidades do CRM com receita esperada, probabilidade e etapa.
 
@@ -579,8 +608,9 @@ def pipeline_crm(
         etapa: Nome da etapa CRM (ex: 'Qualificados', 'Negociacao', 'Won'). None = todas.
         responsavel: Email ou nome do responsavel. None = todos os responsaveis.
         limite: Maximo de oportunidades (default 20).
+        cliente: Slug do cliente Odoo (ex: 'deepstrat'). None = cliente padrao da sessao.
     """
-    r = get_resolver()
+    r = get_resolver(cliente)
     filters = [["type", "=", "opportunity"]]
 
     if etapa:
@@ -589,7 +619,7 @@ def pipeline_crm(
         user_ids = r.users([responsavel])
         filters.append(["user_id", "=", user_ids[0]])
 
-    records = get_odoo().search(
+    records = get_odoo(cliente).search(
         "crm.lead",
         filters=filters,
         fields=["id", "name", "partner_id", "stage_id", "expected_revenue", "probability", "date_deadline", "user_id", "company_currency"],
@@ -622,6 +652,7 @@ def lancar_horas(
     descricao: str = "",
     data: str | None = None,
     funcionario: str | int | None = None,
+    cliente: str | None = None,
 ) -> str:
     """Lanca uma entrada de timesheet (account.analytic.line) em um projeto ou tarefa.
 
@@ -634,9 +665,10 @@ def lancar_horas(
         descricao: Descricao da atividade realizada.
         data: Data no formato YYYY-MM-DD. None = data de hoje.
         funcionario: Nome ou ID do funcionario. None = funcionario do usuario logado.
+        cliente: Slug do cliente Odoo (ex: 'deepstrat'). None = cliente padrao da sessao.
     """
-    r = get_resolver()
-    odoo = get_odoo()
+    r = get_resolver(cliente)
+    odoo = get_odoo(cliente)
 
     project_id = r.project(projeto)
     vals = {
@@ -675,7 +707,7 @@ def lancar_horas(
 
 
 @tool()
-def resolver_nome(modelo: str, nome: str) -> str:
+def resolver_nome(modelo: str, nome: str, cliente: str | None = None) -> str:
     """Resolve um nome textual para ID numerico no Odoo (busca exata, depois ilike).
 
     Use para descobrir IDs antes de usa-los em filtros ou campos de outros modelos.
@@ -685,8 +717,9 @@ def resolver_nome(modelo: str, nome: str) -> str:
     Args:
         modelo: Modelo Odoo (ex: 'res.partner', 'product.product', 'project.task.type').
         nome: Nome a buscar. Aceita nome parcial via ilike como fallback.
+        cliente: Slug do cliente Odoo (ex: 'deepstrat'). None = cliente padrao da sessao.
     """
-    r = get_resolver()
+    r = get_resolver(cliente)
     record_id = r._resolve(modelo, nome)
     return json.dumps({"modelo": modelo, "nome": nome, "id": record_id})
 
@@ -710,12 +743,12 @@ _METODOLOGIA_FALLBACK = (
 )
 
 
-def _get_metodologia():
-    return (_config.get("crm", {}).get("metodologia") or "").strip() or _METODOLOGIA_FALLBACK
+def _get_metodologia(config):
+    return (config.get("crm", {}).get("metodologia") or "").strip() or _METODOLOGIA_FALLBACK
 
 
 @tool()
-def leads_pendentes_qualificacao(limite: int = 30) -> str:
+def leads_pendentes_qualificacao(limite: int = 30, cliente: str | None = None) -> str:
     """Retorna leads novos nao qualificados (stage=Novos, priority=0, sem pesquisa na descricao).
 
     Inclui a metodologia de qualificacao na resposta para guiar o processo.
@@ -727,14 +760,16 @@ def leads_pendentes_qualificacao(limite: int = 30) -> str:
 
     Args:
         limite: Maximo de leads a retornar (default 30).
+        cliente: Slug do cliente Odoo (ex: 'deepstrat'). None = cliente padrao da sessao.
     """
-    odoo = get_odoo()
+    config = get_config(cliente)
+    odoo = get_odoo(cliente)
     records = odoo.search(
         "crm.lead",
         filters=[
             ["type", "=", "lead"],
             ["priority", "=", "0"],
-            ["stage_id.name", "=", _config.get("crm", {}).get("stage_novos", "Novos")],
+            ["stage_id.name", "=", config.get("crm", {}).get("stage_novos", "Novos")],
         ],
         fields=[
             "id", "name", "contact_name", "partner_name",
@@ -775,7 +810,7 @@ def leads_pendentes_qualificacao(limite: int = 30) -> str:
     return json.dumps({
         "total_pendentes": len(pendentes),
         "leads": pendentes,
-        "metodologia": _get_metodologia(),
+        "metodologia": _get_metodologia(config),
     }, default=serialize, ensure_ascii=False)
 
 
@@ -790,6 +825,7 @@ def qualificar_lead(
     potencial: str = "",
     website: str | None = None,
     nota_atividade: str | None = None,
+    cliente: str | None = None,
 ) -> str:
     """Aplica qualificacao em um lead: atualiza prioridade, nomes, pesquisa e executa acoes automaticas.
 
@@ -810,8 +846,10 @@ def qualificar_lead(
         potencial: Avaliacao curta do potencial (ex: 'Alto. E-commerce com produto real.').
         website: URL do site encontrado na pesquisa. None = nao alterar.
         nota_atividade: HTML para a nota da atividade criada. Recomendado para prioridade 2 e 3.
+        cliente: Slug do cliente Odoo (ex: 'deepstrat'). None = cliente padrao da sessao.
     """
-    odoo = get_odoo()
+    config = get_config(cliente)
+    odoo = get_odoo(cliente)
 
     # Buscar lead atual
     lead = odoo.get("crm.lead", lead_id,
@@ -875,7 +913,7 @@ def qualificar_lead(
     # === PRIORIDADE 3: WhatsApp automatico + atividade Call ===
     if prioridade >= 3:
         # 1) Enviar WhatsApp de abordagem (template configurado no YAML do cliente)
-        wa_template_id = _config.get("whatsapp", {}).get("template_abordagem_leads")
+        wa_template_id = config.get("whatsapp", {}).get("template_abordagem_leads")
         phone = lead.get("phone") or ""
         if wa_template_id and phone and len(phone.replace(" ", "").replace("-", "").replace("+", "")) >= 12:
             try:
@@ -903,7 +941,7 @@ def qualificar_lead(
                 resultado["whatsapp"] = f"Nao enviado — telefone invalido ou incompleto: {phone}"
 
         # 2) Criar atividade Call
-        call_type_id = _config.get("activity_types", {}).get("call", 2)
+        call_type_id = config.get("activity_types", {}).get("call", 2)
         act_vals = {
             "res_model_id": model_id,
             "res_model": "crm.lead",
@@ -929,7 +967,7 @@ def qualificar_lead(
             f"<p><b>Decisao necessaria:</b> Avaliar se vale abordar via WhatsApp/ligacao "
             f"ou arquivar o lead.</p>"
         )
-        todo_type_id = _config.get("activity_types", {}).get("todo", 4)
+        todo_type_id = config.get("activity_types", {}).get("todo", 4)
         act_vals = {
             "res_model_id": model_id,
             "res_model": "crm.lead",
@@ -954,6 +992,7 @@ def qualificar_lead(
 def listar_templates_whatsapp(
     modelo: str | None = None,
     apenas_aprovados: bool = True,
+    cliente: str | None = None,
 ) -> str:
     """Lista templates de WhatsApp com corpo, variaveis e modelo vinculado.
 
@@ -966,8 +1005,9 @@ def listar_templates_whatsapp(
     Args:
         modelo: Filtrar por modelo Odoo vinculado (ex: 'crm.lead', 'account.move'). None = todos.
         apenas_aprovados: True (default) retorna apenas templates aprovados pelo Meta/WhatsApp.
+        cliente: Slug do cliente Odoo (ex: 'deepstrat'). None = cliente padrao da sessao.
     """
-    odoo = get_odoo()
+    odoo = get_odoo(cliente)
     filters = []
     if apenas_aprovados:
         filters.append(["status", "=", "approved"])
@@ -1032,6 +1072,7 @@ def enviar_whatsapp(
     registro_id: int,
     telefone: str | None = None,
     textos_livres: dict[str, str] | None = None,
+    cliente: str | None = None,
 ) -> str:
     """ACAO REAL — Envia mensagem WhatsApp via template aprovado. Acao irreversivel.
 
@@ -1049,8 +1090,9 @@ def enviar_whatsapp(
         telefone: Telefone em formato internacional (ex: '+5541999999999'). None = usa o do registro.
         textos_livres: Valores para variaveis free_text, ex: {"1": "Joao", "2": "14:00"}.
                        As chaves sao os numeros das variaveis sem as chaves duplas.
+        cliente: Slug do cliente Odoo (ex: 'deepstrat'). None = cliente padrao da sessao.
     """
-    odoo = get_odoo()
+    odoo = get_odoo(cliente)
 
     # Buscar o template para saber o modelo vinculado
     template = odoo.get("whatsapp.template", template_id,
@@ -1132,6 +1174,7 @@ def preview_whatsapp(
     registro_id: int,
     telefone: str | None = None,
     textos_livres: dict[str, str] | None = None,
+    cliente: str | None = None,
 ) -> str:
     """Gera preview da mensagem WhatsApp SEM enviar. Sem efeito colateral.
 
@@ -1145,8 +1188,9 @@ def preview_whatsapp(
         registro_id: ID do registro no modelo vinculado ao template.
         telefone: Override de telefone. None = usa o do registro.
         textos_livres: Valores para variaveis free_text, no mesmo formato de enviar_whatsapp().
+        cliente: Slug do cliente Odoo (ex: 'deepstrat'). None = cliente padrao da sessao.
     """
-    odoo = get_odoo()
+    odoo = get_odoo(cliente)
 
     template = odoo.get("whatsapp.template", template_id,
                         fields=["model", "name", "body"])
